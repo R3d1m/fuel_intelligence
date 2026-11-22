@@ -31,6 +31,20 @@ This document records the empirical results, A/B policy evaluations, fault-drill
 | `stream_disconnect`| POST /admin/faults `{"type": "stream_disconnect"}` | Stream failed with 503; fell back seamlessly to REST polling | `NORMAL` | SSE auto-reconnected |
 | `error_rate` | POST /admin/faults `{"type": "error_rate", "parameters": {"rate": 0.5}}` | Retries with exponential backoff absorbed transient 503s | `NORMAL` / `DEGRADED_CACHED` | Zero unhandled exceptions |
 
+### Live Simulator Resilience Verification (Fault Injection Drill)
+- **Harness:** End-to-end integration test executed against live simulator at `http://localhost:8000`.
+- **Baseline Sync:** Synchronized 2 depots, 4 stations, 6 routes at simulation tick 0. `GET /health` returned HTTP 200 (`status="healthy"`, `mode="NORMAL"`), `GET /state` returned HTTP 200 with complete snapshot.
+- **Fault Injected:** `POST /admin/faults` with `{"type": "error_rate", "parameters": {"rate": 1.0}}`.
+- **Observed Resilience Behavior:**
+  1. `SimulatorClient` retried up to 3 times with exponential backoff and jitter on transient HTTP 503s.
+  2. 3 consecutive polling failures cleanly tripped `CircuitBreaker` into `OPEN` state.
+  3. `GET /state` continued answering with HTTP 200 OK, seamlessly serving cached snapshot with `mode="DEGRADED_CACHED"` and diagnostic reason: *"Simulator circuit breaker is OPEN (3 failures); serving cached state."*
+- **Recovery:**
+  1. Fault cleared via `POST /admin/faults/clear`.
+  2. Circuit breaker reset; poller immediately fetched fresh snapshot.
+  3. `GET /state` returned HTTP 200 [NORMAL, recovered!].
+- **Result:** Resilience verified with 100% green tests (61/61 passing).
+
 ---
 
 ## 3. Load Testing Performance

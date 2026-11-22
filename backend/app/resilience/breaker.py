@@ -94,6 +94,11 @@ class CircuitBreaker:
         return self._failure_count
 
     @property
+    def consecutive_failures(self) -> int:
+        """Alias for failure_count towards the failure threshold."""
+        return self._failure_count
+
+    @property
     def cooldown_remaining(self) -> float:
         """Seconds remaining before recovery probe is allowed. Returns 0.0 if not OPEN."""
         if self._state != CircuitState.OPEN or self._last_failure_time is None:

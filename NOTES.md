@@ -34,3 +34,15 @@ Personal engineering log documenting architecture insights, simulator quirks, de
 - **Atomic Background Poller:** Built `SimulatorPoller` in `backend/app/ingest/poller.py` utilizing `asyncio.gather` to fetch all simulation entities concurrently. Assembles them into an atomic `SimulatorSnapshot` and feeds `StateStore`. Guards against calling the simulator when the circuit breaker is `OPEN`.
 - **Comprehensive Unit Testing:** Added complete test suites (`test_circuit_breaker.py`, `test_state_store.py`, `test_poller.py`) testing circuit state machines, deterministic mock clocks, store staleness heuristics, and poller task lifecycles (48/48 green tests).
 
+### Block 5: API Skeleton & Operational Mode Diagnostics
+- **Operational Mode Resolution:** Implemented centralized mode computation and diagnosis in `backend/app/resilience/mode.py` resolving authoritative system state across `NORMAL`, `DEGRADED_CACHED`, and `DEGRADED_FALLBACK` with human-readable diagnostic reasons.
+- **FastAPI Core & Lifespan Management:** Constructed `create_app()` factory in `backend/app/api/main.py` with async lifespan hooks managing background poller lifecycle, singleton injection, and clean connection teardown.
+- **REST Endpoints & Schemas:** Designed typed Pydantic API schemas in `backend/app/api/schemas.py` and implemented endpoints in `backend/app/api/routes.py`:
+  - `GET /health`: Platform liveness, simulator circuit state, poller telemetry, and store health.
+  - `GET /state`: Delivers latest validated snapshot in `NORMAL` mode; seamlessly serves cached last-known-good state in `DEGRADED_CACHED` mode during outages.
+  - `POST /sync`: Manual deterministic polling trigger for testing and ad-hoc synchronization.
+- **Dependency Injection Framework:** Implemented FastAPI dependency providers in `backend/app/api/deps.py` supporting frictionless dependency overrides for unit and mock tests.
+- **Empirical Fault Drill Verification:** Validated resilience against the running simulator container: tested baseline normal synchronization, injected `error_rate` (100%) via `/admin/faults`, confirmed circuit breaker tripped to `OPEN`, verified `/state` continued serving cached snapshot with `DEGRADED_CACHED`, cleared faults via `/admin/faults/clear`, and verified automatic return to `NORMAL`.
+- **Test Suite & Code Hygiene:** Expanded automated test suite with `test_operational_mode.py` and `test_api_endpoints.py`. All 61 unit/integration tests passing (61/61 green), zero Ruff warnings. Day 1 Foundation & Discovery successfully completed!
+
+
