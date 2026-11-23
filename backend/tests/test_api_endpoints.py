@@ -9,7 +9,14 @@ import respx
 from app.adapters.simulator_client import SimulatorClient
 from app.api.main import create_app
 from app.config import Settings
-from app.domain.models import InstanceInfo, OperationalMode, SimulatorSnapshot
+from app.domain.models import (
+    FuelMap,
+    InstanceInfo,
+    OperationalMode,
+    SimulatorSnapshot,
+    Station,
+    StationStatus,
+)
 from app.ingest.poller import SimulatorPoller
 from app.ingest.store import StateStore
 from app.resilience.breaker import CircuitBreaker
@@ -234,3 +241,105 @@ async def test_sync_endpoint_rejected_when_circuit_open(test_setup: dict[str, An
         data = resp.json()
         assert data["success"] is False
         assert "Sync rejected" in data["message"]
+
+
+@pytest.mark.asyncio
+async def test_forecasts_endpoint_503_when_no_snapshot(test_setup: dict[str, Any]) -> None:
+    app = test_setup["app"]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/forecasts")
+        assert resp.status_code == 503
+        assert "No simulation snapshot available" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_forecasts_endpoint_success_with_snapshot(test_setup: dict[str, Any]) -> None:
+    app = test_setup["app"]
+    store: StateStore = test_setup["store"]
+    base = "http://test-sim:8000"
+
+    station = Station(
+        id="station-mirpur",
+        name="Mirpur Fuel Station",
+        region_id="region-dhaka",
+        status=StationStatus.OPEN,
+        demand_profile="urban_high",
+        demand_multiplier=1.0,
+        capacity=FuelMap(DIESEL=15000, PETROL=14000, OCTANE=9000),
+        inventory=FuelMap(DIESEL=9000, PETROL=9000, OCTANE=5000),
+    )
+    snapshot = _make_dummy_snapshot()
+    snapshot.stations = [station]
+    store.update(snapshot)
+
+    # Mock demand history response
+    respx.get(f"{base}/v1/demand-history").respond(
+        json=[
+            {
+                "id": 1,
+                "station_id": "station-mirpur",
+                "fuel_type": "DIESEL",
+                "tick": 0,
+                "sim_time": "2026-01-01T00:00:00",
+                "demand_liters": 80.0,
+                "served_liters": 80.0,
+                "unmet_liters": 0.0,
+            }
+        ]
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/forecasts")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["mode"] == OperationalMode.NORMAL.value
+        assert "station-mirpur" in data["forecasts"]
+        assert "DIESEL" in data["forecasts"]["station-mirpur"]
+        assert data["total_fleet_demand_per_hour"] > 0.0
+        assert data["active_anomalies_count"] == 0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_station_forecast_endpoint(test_setup: dict[str, Any]) -> None:
+    app = test_setup["app"]
+    store: StateStore = test_setup["store"]
+    base = "http://test-sim:8000"
+
+    station = Station(
+        id="station-tongi",
+        name="Tongi Station",
+        region_id="region-dhaka",
+        status=StationStatus.OPEN,
+        demand_profile="industrial",
+        demand_multiplier=1.8,
+        capacity=FuelMap(DIESEL=18000, PETROL=9000, OCTANE=6000),
+        inventory=FuelMap(DIESEL=11000, PETROL=6000, OCTANE=3500),
+    )
+    snapshot = _make_dummy_snapshot()
+    snapshot.stations = [station]
+    store.update(snapshot)
+
+    respx.get(f"{base}/v1/demand-history").respond(json=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Success for station-tongi
+        resp = await client.get("/forecasts/station-tongi")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["station_id"] == "station-tongi"
+        assert "DIESEL" in data["forecasts"]
+        # Multiplier is 1.8 -> anomaly flagged
+        assert len(data["anomalies"]) >= 1
+
+        # 404 for unknown station
+        resp_404 = await client.get("/forecasts/unknown-station")
+        assert resp_404.status_code == 404

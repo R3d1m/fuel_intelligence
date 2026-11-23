@@ -12,6 +12,7 @@ from app.adapters.simulator_client import SimulatorClient
 from app.config import Settings, get_settings
 from app.ingest.poller import SimulatorPoller
 from app.ingest.store import StateStore
+from app.intelligence.forecast import DemandForecaster
 from app.resilience.breaker import CircuitBreaker
 
 
@@ -38,3 +39,10 @@ def get_simulator_client(request: Request) -> SimulatorClient:
 def get_poller(request: Request) -> SimulatorPoller:
     """Extract the background SimulatorPoller service from app.state."""
     return cast(SimulatorPoller, request.app.state.poller)
+
+
+def get_forecaster(request: Request) -> DemandForecaster:
+    """Extract the DemandForecaster intelligence service from app.state."""
+    if hasattr(request.app.state, "forecaster") and request.app.state.forecaster is not None:
+        return cast(DemandForecaster, request.app.state.forecaster)
+    return DemandForecaster(settings=get_app_settings())

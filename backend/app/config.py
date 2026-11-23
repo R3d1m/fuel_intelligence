@@ -53,6 +53,29 @@ class Settings(BaseSettings):
         description="Age threshold in seconds beyond which cached snapshot is deemed stale.",
     )
 
+    # Intelligence / Demand Forecasting
+    forecast_horizon_ticks: int = Field(
+        default=24,
+        ge=1,
+        description="Number of future ticks to project forward in demand forecasts.",
+    )
+    forecast_ewma_alpha: float = Field(
+        default=0.3,
+        gt=0.0,
+        le=1.0,
+        description="Smoothing parameter alpha for EWMA demand forecasting.",
+    )
+    forecast_history_limit: int = Field(
+        default=300,
+        ge=10,
+        description="Maximum demand history records to query per station.",
+    )
+    forecast_spike_threshold_ratio: float = Field(
+        default=1.35,
+        gt=1.0,
+        description="Ratio threshold between recent demand and baseline to flag anomaly spike.",
+    )
+
     # Resilience / Circuit Breaker
     circuit_breaker_failure_threshold: int = Field(
         default=5,

@@ -16,6 +16,7 @@ from app.api.routes import router as api_router
 from app.config import Settings, get_settings
 from app.ingest.poller import SimulatorPoller
 from app.ingest.store import StateStore
+from app.intelligence.forecast import DemandForecaster
 from app.resilience.breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ def create_app(
     store: StateStore | None = None,
     breaker: CircuitBreaker | None = None,
     poller: SimulatorPoller | None = None,
+    forecaster: DemandForecaster | None = None,
     start_poller: bool = True,
 ) -> FastAPI:
     """Application factory for the Fuel Intelligence backend.
@@ -56,6 +58,7 @@ def create_app(
         poll_interval_seconds=cfg.poll_interval_seconds,
         settings=cfg,
     )
+    app_forecaster = forecaster or DemandForecaster(settings=cfg)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> Any:
@@ -95,6 +98,7 @@ def create_app(
     app.state.store = app_store
     app.state.breaker = app_breaker
     app.state.poller = app_poller
+    app.state.forecaster = app_forecaster
 
     # Enable CORS for local dashboards and browser clients
     app.add_middleware(

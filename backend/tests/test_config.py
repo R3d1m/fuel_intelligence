@@ -14,6 +14,10 @@ def test_default_settings():
     assert settings.simulator_backoff_factor == 0.5
     assert settings.poll_interval_seconds == 1.0
     assert settings.stale_threshold_seconds == 10.0
+    assert settings.forecast_horizon_ticks == 24
+    assert settings.forecast_ewma_alpha == 0.3
+    assert settings.forecast_history_limit == 300
+    assert settings.forecast_spike_threshold_ratio == 1.35
     assert settings.circuit_breaker_failure_threshold == 5
     assert settings.circuit_breaker_recovery_timeout == 10.0
     assert settings.app_env == "development"

@@ -75,8 +75,7 @@ def diagnose_operational_mode(
         return ModeDiagnosis(
             mode=OperationalMode.DEGRADED_FALLBACK,
             reason=(
-                "Intelligence forecaster or twin failure detected; "
-                "running rule-based heuristics."
+                "Intelligence forecaster or twin failure detected; running rule-based heuristics."
             ),
             circuit_state=circuit_state_str,
             is_stale=is_stale,

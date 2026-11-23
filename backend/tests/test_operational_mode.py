@@ -109,9 +109,7 @@ def test_mode_degraded_fallback_when_forecaster_fails() -> None:
     store = StateStore()
     store.update(_make_dummy_snapshot(is_stale=False))
 
-    diagnosis = diagnose_operational_mode(
-        breaker=breaker, store=store, forecaster_failed=True
-    )
+    diagnosis = diagnose_operational_mode(breaker=breaker, store=store, forecaster_failed=True)
     assert diagnosis.mode == OperationalMode.DEGRADED_FALLBACK
     assert diagnosis.forecaster_failed
     assert "forecaster or twin failure" in diagnosis.reason

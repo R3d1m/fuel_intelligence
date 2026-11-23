@@ -4,7 +4,7 @@ Personal engineering log documenting architecture insights, simulator quirks, de
 
 ---
 
-## Day 1: Foundation and Discovery
+## Day 1
 
 ### Block 1: Repo Hygiene & Engineering Standards
 - **Standardization:** Set up clean separation between `adapters` (simulator HTTP/fault boundary), `domain` (Pydantic models), `ingest` (poller and state store), `intelligence` (forecast, risk, planner, digital twin), `decisions` (recommendations, approvals, SQLite audit ledger), `resilience` (circuit breaker, degraded modes), and `api` (FastAPI).
@@ -44,5 +44,33 @@ Personal engineering log documenting architecture insights, simulator quirks, de
 - **Dependency Injection Framework:** Implemented FastAPI dependency providers in `backend/app/api/deps.py` supporting frictionless dependency overrides for unit and mock tests.
 - **Empirical Fault Drill Verification:** Validated resilience against the running simulator container: tested baseline normal synchronization, injected `error_rate` (100%) via `/admin/faults`, confirmed circuit breaker tripped to `OPEN`, verified `/state` continued serving cached snapshot with `DEGRADED_CACHED`, cleared faults via `/admin/faults/clear`, and verified automatic return to `NORMAL`.
 - **Test Suite & Code Hygiene:** Expanded automated test suite with `test_operational_mode.py` and `test_api_endpoints.py`. All 61 unit/integration tests passing (61/61 green), zero Ruff warnings. Day 1 Foundation & Discovery successfully completed!
+
+---
+
+## Day 2
+
+### Block 1: Demand Forecast & Anomaly Detection
+- **Multi-Level Time-Series Engine:** Implemented `DemandForecaster` in `backend/app/intelligence/forecast.py`:
+  - **Level 1 (EWMA):** Recursive Exponentially Weighted Moving Average ($s_t = \alpha y_t + (1-\alpha)s_{t-1}$) of per-tick demand with dynamic conversion to liters/hour calculated from real `instance.tick_minutes` ($60 / \text{tick\_minutes}$).
+  - **Level 2 (Diurnal Profile Learning):** Empirical hour-of-day seasonal factor learning across hours $0 \dots 23$ with Bayesian shrinkage towards $1.0$ ($M = 4.0$). Smoothly falls back to pure EWMA when historical records span fewer than 3 unique hours or cold-start data is sparse.
+  - **Cold-Start Nominal Fallback:** Profile-aware baseline table (`urban_high`, `industrial`, `highway`, `regional`) providing initial rates prior to observation history, scaled by `station.demand_multiplier`.
+- **Dual-Signal Anomaly Detection:** Built `detect_anomaly()` evaluating both:
+  1. *Simulator station demand_multiplier:* Explicit multiplier status ($> 1.05$) indicating injected or scheduled demand spikes.
+  2. *Statistical Demand Surge:* Ratio of short-term moving average (last 3 ticks) against long-term baseline ($\ge 1.35x$).
+  3. *Actionable Narrative:* Generates detailed multi-signal diagnostic explanations and severity classifications (`OK`, `WATCH`, `CRITICAL`).
+- **Sequential Walk-Forward Backtesting:** Built out-of-sample rolling 1-step-ahead backtest engine measuring real-time forecast error:
+  - Mean Absolute Error (MAE in L/tick).
+  - Mean Absolute Percentage Error (MAPE in %).
+  - Root Mean Squared Error (RMSE in L/tick).
+  - Residual standard deviation ($\sigma_{\text{residual}}$) used to calibrate 95% confidence bounds ($\pm 1.96\sigma$) for forward projection trajectories and Monte Carlo digital twin noise.
+- **REST Endpoints & Observability:**
+  - Added `GET /forecasts` (fleet-wide demand rates, aggregate prediction error metrics, and active anomalies).
+  - Added `GET /forecasts/{station_id}` (station-specific forecasts and anomaly telemetry).
+- **Test Coverage & Verification:**
+  - Added unit test suite `backend/tests/test_forecast.py` covering cold-start, EWMA math, dynamic rates, diurnal shrinkage, backtest error, anomaly dual-signals, and confidence bounds.
+  - Added integration tests in `backend/tests/test_api_endpoints.py`.
+  - Executed live empirical validation against running Docker simulator: 8 ticks stepped, 96 demand records analyzed, out-of-sample backtest observed $3.41\text{ L/tick}$ MAE and $6.36\%$ MAPE, and live injected `demand_spike` ($2.0x$) was flagged in real time.
+  - Test suite now stands at **76 passed tests (76/76 green)**, zero Ruff lint/format errors.
+
 
 
