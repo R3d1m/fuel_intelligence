@@ -1,5 +1,5 @@
 services:
-  simulator-api:
+  simulator:
     image: asifmahmoud414/bup-fuel-supply-simulator:1.0.0
     container_name: fuel-simulator
     environment:
@@ -14,3 +14,50 @@ services:
       timeout: 3s
       retries: 3
       start_period: 2s
+    networks:
+      default:
+        aliases:
+          - simulator
+          - simulator-api
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: fuel-backend
+    environment:
+      SIMULATOR_BASE_URL: http://simulator:8000
+      PORT: 8001
+      APP_ENV: production
+      LOG_LEVEL: INFO
+      POLL_INTERVAL_SECONDS: 1.0
+    ports:
+      - "8001:8001"
+    depends_on:
+      simulator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 3s
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: fuel-dashboard
+    environment:
+      BACKEND_API_URL: http://backend:8001
+    ports:
+      - "8501:8501"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8501/_stcore/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

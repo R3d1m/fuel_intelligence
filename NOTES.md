@@ -132,5 +132,20 @@ Personal engineering log documenting architecture insights, simulator quirks, de
   - Verified with headless `streamlit.testing.v1.AppTest`: 0 exceptions, clean degraded/offline error rendering.
   - Full automated test suite expanded to **110 passed tests (110/110 green)** with zero Ruff lint/format errors.
 
+### Block 4: Containers & Orchestration
+- **Production Containerization:**
+  - `backend/Dockerfile`: Multi-stage ready, lightweight `python:3.11-slim` container with non-root user (`appuser`), layer caching for pip requirements, exposed port `8001`, and internal healthcheck probe (`GET /health`).
+  - `dashboard/Dockerfile`: Streamlit production container with configured headless runtime, disabled usage telemetry, non-root user with home directory cache permissions, exposed port `8501`, and internal healthcheck probe (`GET /_stcore/health`).
+  - `.dockerignore`: Filtered VCS artifacts, Python bytecode (`__pycache__`), virtual environments (`.venv`), testing caches, and coverage reports to keep Docker build context slim and fast.
+- **Docker Compose Networking & Health Orchestration:**
+  - `docker-compose.yml`: Fully wired 3-tier service topology:
+    - `simulator`: Official BUP simulator on port `8000` with network alias `simulator-api` and healthcheck (`/v1/health`).
+    - `backend`: FastAPI backend on port `8001`, connects to `http://simulator:8000`, starts with `depends_on: simulator` condition `service_healthy`.
+    - `dashboard`: Streamlit UI on port `8501`, connects to backend via internal container network `http://backend:8001`, starts with `depends_on: backend` condition `service_healthy`.
+- **Validation:**
+  - Successfully built both images using `docker compose build`.
+  - Started the full 3-container stack and verified all three services report `healthy` with clean compose networking.
+
+
 
 
