@@ -251,23 +251,32 @@ def render_urgency_alerts(risk_data: dict[str, Any] | None, severity_filter: str
 
         st_id = alert.get("station_id", "")
         st_name = alert.get("station_name", st_id)
-        fuel = alert.get("fuel", "").upper()
+        fuel = alert.get("fuel_type", alert.get("fuel", "")).upper()
         urgency = alert.get("urgency_score", 0.0)
         hours_stockout = alert.get("hours_to_stockout")
-        stockout_tick = alert.get("stockout_tick")
+        stockout_tick = alert.get("first_stockout_tick", alert.get("stockout_tick"))
         is_unavoidable = alert.get("is_unavoidable_stockout", False)
         unavoidable_h = alert.get("unavoidable_shortage_hours")
         confidence = alert.get("confidence", 1.0)
-        conf_tier = alert.get("confidence_tier", "HIGH")
+        conf_tier = alert.get("confidence_level", alert.get("confidence_tier", "HIGH"))
         needs_review = alert.get("needs_human_review", False)
 
         drivers = alert.get("drivers", {})
-        explanation = drivers.get("explanation", "Potential supply shortage detected.")
-        initial_inv = drivers.get("initial_inventory", 0.0)
-        capacity = drivers.get("capacity", 1.0)
-        fill_ratio = (initial_inv / capacity * 100.0) if capacity > 0 else 0.0
-        burn_rate = drivers.get("burn_rate_liters_per_hour", 0.0)
-        incoming_shipments = drivers.get("incoming_shipments_count", 0)
+        explanation = alert.get(
+            "explanation", drivers.get("explanation", "Potential supply shortage detected.")
+        )
+        initial_inv = drivers.get("initial_inventory_liters", drivers.get("initial_inventory", 0.0))
+        capacity = drivers.get("tank_capacity_liters", drivers.get("capacity", 1.0))
+        fill_ratio = (
+            alert.get("current_fill_ratio", (initial_inv / capacity) if capacity > 0 else 0.0)
+            * 100.0
+        )
+        burn_rate = drivers.get(
+            "demand_rate_liters_per_hour", drivers.get("burn_rate_liters_per_hour", 0.0)
+        )
+        incoming_shipments = drivers.get(
+            "in_transit_shipments_count", drivers.get("incoming_shipments_count", 0)
+        )
 
         # Build Card Header HTML
         header_html = (
@@ -336,15 +345,16 @@ def render_risk_matrix(risk_data: dict[str, Any] | None, severity_filter: str) -
             if severity_filter != "ALL" and sev != severity_filter:
                 continue
 
-            inv = r.get("current_inventory", 0.0)
-            cap = r.get("capacity", 0.0)
-            fill_pct = r.get("fill_ratio", 0.0) * 100.0
-            stockout_h = r.get("projected_stockout_hours")
+            inv = r.get("current_inventory_liters", r.get("current_inventory", 0.0))
+            cap = r.get("capacity_liters", r.get("capacity", 0.0))
+            fill_pct = r.get("current_fill_ratio", r.get("fill_ratio", 0.0)) * 100.0
+            stockout_h = r.get("hours_to_stockout", r.get("projected_stockout_hours"))
             stockout_str = f"{stockout_h:.1f}h" if stockout_h is not None else "Safe (>24t)"
-            unmet = r.get("projected_unmet_liters", 0.0)
+            unmet = r.get("total_unmet_liters", r.get("projected_unmet_liters", 0.0))
             conf = r.get("confidence", 1.0)
             needs_review = r.get("needs_human_review", False)
-            arrivals = r.get("arrivals_count", 0)
+            drivers = r.get("drivers", {})
+            arrivals = drivers.get("in_transit_shipments_count", r.get("arrivals_count", 0))
 
             records.append(
                 {
@@ -463,8 +473,13 @@ def render_depot_status(
                 fill_ratio = (current_l / total_cap * 100.0) if total_cap > 0 else 0.0
 
                 dp_fuel_risk = depot_risks.get(dp_id, {}).get(fuel, {})
-                reserve_crit = dp_fuel_risk.get("is_reserve_critical", False)
-                disp_inv = dp_fuel_risk.get("dispatchable_inventory", current_l)
+                reserve_crit = dp_fuel_risk.get(
+                    "is_reserve_critical", dp_fuel_risk.get("severity") == "CRITICAL"
+                )
+                disp_inv = dp_fuel_risk.get(
+                    "effective_available_liters",
+                    dp_fuel_risk.get("dispatchable_inventory", current_l),
+                )
 
                 with cols[idx]:
                     label = f"{fuel.upper()}" + (" ⚠️ (Reserve Low)" if reserve_crit else "")
