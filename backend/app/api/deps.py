@@ -13,6 +13,7 @@ from app.config import Settings, get_settings
 from app.ingest.poller import SimulatorPoller
 from app.ingest.store import StateStore
 from app.intelligence.forecast import DemandForecaster
+from app.intelligence.risk import RiskEngine
 from app.resilience.breaker import CircuitBreaker
 
 
@@ -46,3 +47,10 @@ def get_forecaster(request: Request) -> DemandForecaster:
     if hasattr(request.app.state, "forecaster") and request.app.state.forecaster is not None:
         return cast(DemandForecaster, request.app.state.forecaster)
     return DemandForecaster(settings=get_app_settings())
+
+
+def get_risk_engine(request: Request) -> RiskEngine:
+    """Extract the RiskEngine intelligence service from app.state."""
+    if hasattr(request.app.state, "risk_engine") and request.app.state.risk_engine is not None:
+        return cast(RiskEngine, request.app.state.risk_engine)
+    return RiskEngine(settings=get_app_settings(), forecaster=get_forecaster(request))

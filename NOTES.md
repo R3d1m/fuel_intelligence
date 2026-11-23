@@ -72,5 +72,38 @@ Personal engineering log documenting architecture insights, simulator quirks, de
   - Executed live empirical validation against running Docker simulator: 8 ticks stepped, 96 demand records analyzed, out-of-sample backtest observed $3.41\text{ L/tick}$ MAE and $6.36\%$ MAPE, and live injected `demand_spike` ($2.0x$) was flagged in real time.
   - Test suite now stands at **76 passed tests (76/76 green)**, zero Ruff lint/format errors.
 
+### Block 2: Risk Engine & Stockout Projection
+- **Stock-Flow Forward Projection:** Implemented `RiskEngine` in `backend/app/intelligence/risk.py`:
+  - Simulates forward inventory trajectories tick-by-tick across a configurable horizon (default: 24 ticks = 6.0h):
+    $$\text{Inventory}_{t} = \max(0.0, \min(\text{Capacity}, \text{Inventory}_{t-1} + \text{Incoming Arrivals}_t) - \text{Demand}_t)$$
+  - Tracks first stockout tick, hours to stockout ($\Delta t \times \text{tick\_minutes} / 60$), total unmet liters, minimum projected inventory, and tank overflow protection.
+- **In-Transit and Pending Shipment Mechanics:**
+  - Accurately integrates active shipments (`IN_TRANSIT`) based on route transit duration or explicit `expected_arrival_tick`.
+  - Enforces empirical finding: detects when a `PENDING` allocation is assigned to a `DISRUPTED` route (which fails at departure in the simulator without refund) and excludes it from counted arrival stock with clear operator warnings.
+- **Arrival-Feasibility & Unavoidable Stockout Reasoning:**
+  - Dynamically calculates the minimum transit time ($\min \text{transit\_ticks} + 1$) across all available routes to each station.
+  - Flags `is_unavoidable_stockout = True` and computes `unavoidable_shortage_hours` when inventory will deplete before the fastest replenishment could physically arrive.
+- **Multi-Factor Risk Severity Resolution:**
+  - `CRITICAL`: Stockout within $\le 3.0$ hours, tank inventory $\le 20\%$ of capacity, or unavoidable stockout.
+  - `WATCH`: Stockout within $\le 8.0$ hours, tank inventory $\le 35\%$, active demand spike anomaly, or complete route isolation (all connecting routes disrupted).
+  - `OK`: Healthy inventory, no projected stockout within horizon, and stable supply.
+- **Confidence Scoring & Uncertainty Communication:**
+  - Blends data freshness (penalized when data age $> 10$s or flagged stale by simulator `X-Simulator-Stale`) with empirical forecast accuracy (MAPE from backtest):
+    $$C = C_{\text{freshness}} \times C_{\text{forecast}} \in [0.05, 1.0]$$
+  - Categorizes confidence into `HIGH` ($\ge 0.80$), `MEDIUM` ($0.50 \dots 0.80$), and `LOW` ($< 0.50$), automatically setting `needs_human_review = True` on low confidence or critical severity.
+- **Actionable Diagnostic Drivers:**
+  - Exposes `RiskDrivers` containing initial fill ratios, burn rates, incoming shipment tallies, route status, and human-readable explanation strings explaining *why* the risk exists for operator transparency.
+- **Fleet-Wide Aggregation & Urgency Alerts:**
+  - Aggregates fleet severities (`critical_count`, `watch_count`, `ok_count`), identifies earliest fleet-wide stockout, and sorts `active_alerts` by a scalar urgency ranking combining severity tier, stockout proximity, tank emptiness, and demand surges.
+  - Implemented bulk depot reserve risk evaluation (`DepotFuelRisk`) modeling effective dispatchable inventory against pending commitments.
+- **REST Endpoints & Integration:**
+  - Added `GET /risks` (fleet-wide risk assessment, active alerts, overall severity).
+  - Added `GET /risks/{station_id}` (station-specific inventory trajectories, drivers, and alerts).
+- **Test Coverage & Live Validation:**
+  - Created unit test suite `backend/tests/test_risk.py` with 13 comprehensive tests covering nominal scenarios, low-tank thresholds, stockout timing, in-transit mitigation, unavoidable shortage, isolated stations, disrupted pending allocations, tank overflow capping, confidence penalties, and urgency sorting.
+  - Added API integration tests in `backend/tests/test_api_endpoints.py` testing `/risks` and `/risks/{station_id}` under normal, 404, and degraded conditions.
+  - Full test suite now stands at **92 passed tests (92/92 green)** with 0 Ruff errors.
+  - Validated live against the running simulator container: tested nominal operations and verified real-time escalation to `WATCH` and urgency alerts when injecting a $3.5\times$ demand spike.
+
 
 

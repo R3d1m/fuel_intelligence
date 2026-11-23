@@ -343,3 +343,92 @@ async def test_station_forecast_endpoint(test_setup: dict[str, Any]) -> None:
         # 404 for unknown station
         resp_404 = await client.get("/forecasts/unknown-station")
         assert resp_404.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_risks_endpoint_503_when_no_snapshot(test_setup: dict[str, Any]) -> None:
+    app = test_setup["app"]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/risks")
+        assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_risks_endpoint_success_with_snapshot(test_setup: dict[str, Any]) -> None:
+    app = test_setup["app"]
+    store: StateStore = test_setup["store"]
+    base = "http://test-sim:8000"
+
+    station = Station(
+        id="station-mirpur",
+        name="Mirpur Fuel Station",
+        region_id="region-dhaka",
+        status=StationStatus.OPEN,
+        demand_profile="urban_high",
+        demand_multiplier=1.0,
+        capacity=FuelMap(DIESEL=15000, PETROL=14000, OCTANE=9000),
+        inventory=FuelMap(DIESEL=9000, PETROL=9000, OCTANE=5000),
+    )
+    snapshot = _make_dummy_snapshot()
+    snapshot.stations = [station]
+    store.update(snapshot)
+
+    respx.get(f"{base}/v1/demand-history").respond(json=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/risks")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["mode"] == OperationalMode.NORMAL.value
+        assert "overall_severity" in data
+        assert "station-mirpur" in data["station_risks"]
+        assert "DIESEL" in data["station_risks"]["station-mirpur"]
+        assert data["fleet_average_confidence"] > 0.0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_station_risk_endpoint(test_setup: dict[str, Any]) -> None:
+    app = test_setup["app"]
+    store: StateStore = test_setup["store"]
+    base = "http://test-sim:8000"
+
+    station = Station(
+        id="station-tongi",
+        name="Tongi Station",
+        region_id="region-dhaka",
+        status=StationStatus.OPEN,
+        demand_profile="industrial",
+        demand_multiplier=1.0,
+        capacity=FuelMap(DIESEL=18000, PETROL=9000, OCTANE=6000),
+        inventory=FuelMap(DIESEL=1500, PETROL=6000, OCTANE=3500),  # DIESEL is < 20% -> CRITICAL
+    )
+    snapshot = _make_dummy_snapshot()
+    snapshot.stations = [station]
+    store.update(snapshot)
+
+    respx.get(f"{base}/v1/demand-history").respond(json=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/risks/station-tongi")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["station_id"] == "station-tongi"
+        assert data["station_name"] == "Tongi Station"
+        assert data["highest_severity"] == "CRITICAL"
+        assert "DIESEL" in data["risks"]
+        assert len(data["risks"]["DIESEL"]["trajectory"]) == 24
+        assert len(data["alerts"]) >= 1
+
+        # 404 for unknown station
+        resp_404 = await client.get("/risks/unknown-station")
+        assert resp_404.status_code == 404

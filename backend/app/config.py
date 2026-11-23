@@ -76,6 +76,41 @@ class Settings(BaseSettings):
         description="Ratio threshold between recent demand and baseline to flag anomaly spike.",
     )
 
+    # Intelligence / Risk Engine
+    risk_horizon_ticks: int = Field(
+        default=24,
+        ge=1,
+        description="Number of future ticks to project inventory forward in risk assessments.",
+    )
+    risk_critical_hours: float = Field(
+        default=3.0,
+        gt=0.0,
+        description="Hours to stockout threshold below which severity is CRITICAL.",
+    )
+    risk_critical_fill_ratio: float = Field(
+        default=0.20,
+        ge=0.0,
+        le=1.0,
+        description="Tank fill ratio threshold below which severity is CRITICAL.",
+    )
+    risk_watch_hours: float = Field(
+        default=8.0,
+        gt=0.0,
+        description="Hours to stockout threshold below which severity is WATCH.",
+    )
+    risk_watch_fill_ratio: float = Field(
+        default=0.35,
+        ge=0.0,
+        le=1.0,
+        description="Tank fill ratio threshold below which severity is WATCH.",
+    )
+    risk_min_confidence: float = Field(
+        default=0.60,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence score below which human review is mandated.",
+    )
+
     # Resilience / Circuit Breaker
     circuit_breaker_failure_threshold: int = Field(
         default=5,

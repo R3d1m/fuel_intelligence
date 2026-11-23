@@ -115,3 +115,63 @@ class StationForecastResponse(BaseModel):
     forecasts: dict[str, Any] = Field(..., description="Forecasts keyed by fuel type.")
     anomalies: list[dict[str, Any]] = Field(default_factory=list)
     evaluated_at: datetime = Field(..., description="UTC evaluation timestamp.")
+
+
+class RiskResponse(BaseModel):
+    """Fleet-wide inventory risk projections, active alerts, and stockout assessments."""
+
+    mode: OperationalMode = Field(
+        ...,
+        description="Authoritative operational mode: NORMAL, DEGRADED_CACHED, DEGRADED_FALLBACK.",
+    )
+    reason: str = Field(..., description="Diagnostic justification for current operational mode.")
+    overall_severity: str = Field(..., description="Fleet maximum severity: OK, WATCH, CRITICAL.")
+    critical_count: int = Field(
+        ..., description="Count of (station, fuel) pairs in CRITICAL severity."
+    )
+    watch_count: int = Field(..., description="Count of (station, fuel) pairs in WATCH severity.")
+    ok_count: int = Field(..., description="Count of (station, fuel) pairs in OK severity.")
+    total_projected_unmet_liters: float = Field(
+        ..., description="Total projected unmet demand over horizon in liters."
+    )
+    earliest_stockout_station_id: str | None = Field(
+        None, description="Identifier of station facing earliest stockout."
+    )
+    earliest_stockout_fuel: str | None = Field(
+        None, description="Fuel type facing earliest stockout."
+    )
+    earliest_stockout_hours: float | None = Field(
+        None, description="Hours until earliest stockout across fleet."
+    )
+    fleet_average_confidence: float = Field(
+        ..., description="Average confidence score across all risk evaluations (0-1)."
+    )
+    active_alerts_count: int = Field(..., description="Number of priority operational alerts.")
+    active_alerts: list[dict[str, Any]] = Field(
+        default_factory=list, description="Urgency-sorted alert cards for dashboard."
+    )
+    station_risks: dict[str, dict[str, Any]] = Field(
+        ..., description="Nested risk projections keyed by [station_id][fuel_type]."
+    )
+    depot_risks: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Depot bulk inventory reserve risks keyed by [depot_id][fuel_type].",
+    )
+    evaluated_at: datetime = Field(..., description="UTC evaluation timestamp.")
+
+
+class StationRiskResponse(BaseModel):
+    """Station-specific risk projections and stockout analysis across fuels."""
+
+    mode: OperationalMode = Field(..., description="Authoritative operational mode.")
+    reason: str = Field(..., description="Diagnostic justification for current operational mode.")
+    station_id: str = Field(..., description="Target fuel station identifier.")
+    station_name: str = Field(..., description="Name of the fuel station.")
+    highest_severity: str = Field(
+        ..., description="Worst-case severity across fuels at this station."
+    )
+    risks: dict[str, Any] = Field(..., description="Detailed risk projections keyed by fuel type.")
+    alerts: list[dict[str, Any]] = Field(
+        default_factory=list, description="Active alerts for this station."
+    )
+    evaluated_at: datetime = Field(..., description="UTC evaluation timestamp.")

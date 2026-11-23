@@ -10,6 +10,7 @@ from app.api.deps import (
     get_circuit_breaker,
     get_forecaster,
     get_poller,
+    get_risk_engine,
     get_simulator_client,
     get_state_store,
 )
@@ -17,17 +18,20 @@ from app.api.schemas import (
     ForecastResponse,
     HealthResponse,
     PollerDependencyHealth,
+    RiskResponse,
     SimulatorDependencyHealth,
     StateResponse,
     StationForecastResponse,
+    StationRiskResponse,
     StoreDependencyHealth,
     SyncResponse,
 )
 from app.config import Settings
-from app.domain.models import DemandHistoryRecord, OperationalMode
+from app.domain.models import DemandHistoryRecord, OperationalMode, RiskSeverity
 from app.ingest.poller import SimulatorPoller
 from app.ingest.store import StateStore
 from app.intelligence.forecast import DemandForecaster
+from app.intelligence.risk import RiskAlert, RiskEngine, calculate_urgency_score
 from app.resilience.breaker import CircuitBreaker, CircuitState
 from app.resilience.mode import diagnose_operational_mode
 
@@ -327,5 +331,239 @@ async def get_station_forecast(
         station_id=station_id,
         forecasts=station_fcs,
         anomalies=anomalies,
+        evaluated_at=diagnosis.evaluated_at,
+    )
+
+
+@router.get(
+    "/risks",
+    response_model=RiskResponse,
+    summary="Fleet-Wide Fuel Risk Assessment",
+    description=(
+        "Returns inventory projections, stockout times, urgency alerts, "
+        "and risk drivers across all stations."
+    ),
+)
+async def get_risks(
+    settings: Settings = Depends(get_app_settings),
+    store: StateStore = Depends(get_state_store),
+    client: SimulatorClient = Depends(get_simulator_client),
+    breaker: CircuitBreaker = Depends(get_circuit_breaker),
+    forecaster: DemandForecaster = Depends(get_forecaster),
+    risk_engine: RiskEngine = Depends(get_risk_engine),
+) -> RiskResponse:
+    """Evaluate and return fleet-wide fuel risk projections and operational alerts."""
+    snapshot = store.get_effective_snapshot()
+    if snapshot is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No simulation snapshot available yet to evaluate risk projections.",
+        )
+
+    history_records: list[DemandHistoryRecord] = []
+    if breaker.can_execute():
+        try:
+            resp = await client.get_demand_history(limit=settings.forecast_history_limit)
+            history_records = resp.data
+        except Exception as exc:
+            logger.warning("Failed to fetch demand history from simulator: %s", exc)
+
+    data_age = store.snapshot_age_seconds() or 0.0
+    is_stale = store.is_stale(stale_threshold_seconds=settings.stale_threshold_seconds)
+    engine_failed = False
+
+    try:
+        fleet_fc = forecaster.forecast_all(
+            snapshot=snapshot,
+            demand_history=history_records,
+            horizon_ticks=settings.risk_horizon_ticks,
+        )
+        fleet_risk = risk_engine.assess_fleet_risk(
+            snapshot=snapshot,
+            fleet_forecast=fleet_fc,
+            demand_history=history_records,
+            data_age_seconds=data_age,
+            is_stale=is_stale,
+            horizon_ticks=settings.risk_horizon_ticks,
+        )
+    except Exception as exc:
+        logger.error("Risk engine encountered unexpected error: %s", exc)
+        engine_failed = True
+        # Minimal fallback
+        fleet_risk = risk_engine.assess_fleet_risk(
+            snapshot=snapshot,
+            fleet_forecast=None,
+            demand_history=[],
+            data_age_seconds=data_age,
+            is_stale=is_stale,
+            horizon_ticks=settings.risk_horizon_ticks,
+        )
+
+    diagnosis = diagnose_operational_mode(
+        breaker=breaker,
+        store=store,
+        forecaster_failed=engine_failed,
+        stale_threshold_seconds=settings.stale_threshold_seconds,
+    )
+
+    serialized_station_risks = {
+        st_id: {fuel: r.model_dump(mode="json") for fuel, r in fuels.items()}
+        for st_id, fuels in fleet_risk.station_risks.items()
+    }
+    serialized_depot_risks = {
+        dp_id: {fuel: r.model_dump(mode="json") for fuel, r in fuels.items()}
+        for dp_id, fuels in fleet_risk.depot_risks.items()
+    }
+    serialized_alerts = [a.model_dump(mode="json") for a in fleet_risk.active_alerts]
+
+    return RiskResponse(
+        mode=diagnosis.mode,
+        reason=diagnosis.reason,
+        overall_severity=fleet_risk.overall_severity.value,
+        critical_count=fleet_risk.critical_count,
+        watch_count=fleet_risk.watch_count,
+        ok_count=fleet_risk.ok_count,
+        total_projected_unmet_liters=fleet_risk.total_projected_unmet_liters,
+        earliest_stockout_station_id=fleet_risk.earliest_stockout_station_id,
+        earliest_stockout_fuel=(
+            fleet_risk.earliest_stockout_fuel.value if fleet_risk.earliest_stockout_fuel else None
+        ),
+        earliest_stockout_hours=fleet_risk.earliest_stockout_hours,
+        fleet_average_confidence=fleet_risk.fleet_average_confidence,
+        active_alerts_count=len(serialized_alerts),
+        active_alerts=serialized_alerts,
+        station_risks=serialized_station_risks,
+        depot_risks=serialized_depot_risks,
+        evaluated_at=diagnosis.evaluated_at,
+    )
+
+
+@router.get(
+    "/risks/{station_id}",
+    response_model=StationRiskResponse,
+    summary="Station-Specific Risk Assessment",
+    description=(
+        "Returns forward-projected inventory trajectories and "
+        "stockout risks for a specific station."
+    ),
+)
+async def get_station_risk(
+    station_id: str,
+    settings: Settings = Depends(get_app_settings),
+    store: StateStore = Depends(get_state_store),
+    client: SimulatorClient = Depends(get_simulator_client),
+    breaker: CircuitBreaker = Depends(get_circuit_breaker),
+    forecaster: DemandForecaster = Depends(get_forecaster),
+    risk_engine: RiskEngine = Depends(get_risk_engine),
+) -> StationRiskResponse:
+    """Retrieve detailed risk projections and trajectory points for a single station."""
+    snapshot = store.get_effective_snapshot()
+    if snapshot is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No simulation snapshot available yet to evaluate risk projections.",
+        )
+
+    target_station = next((s for s in snapshot.stations if s.id == station_id), None)
+    if target_station is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Station '{station_id}' not found in current simulation topology.",
+        )
+
+    history_records: list[DemandHistoryRecord] = []
+    if breaker.can_execute():
+        try:
+            resp = await client.get_demand_history(
+                station_id=station_id,
+                limit=settings.forecast_history_limit,
+            )
+            history_records = resp.data
+        except Exception as exc:
+            logger.warning("Failed to fetch demand history for %s: %s", station_id, exc)
+
+    data_age = store.snapshot_age_seconds() or 0.0
+    is_stale = store.is_stale(stale_threshold_seconds=settings.stale_threshold_seconds)
+
+    diagnosis = diagnose_operational_mode(
+        breaker=breaker,
+        store=store,
+        forecaster_failed=False,
+        stale_threshold_seconds=settings.stale_threshold_seconds,
+    )
+
+    station_risks_dict = {}
+    station_alerts = []
+    highest_sev = RiskSeverity.OK
+
+    for fuel in target_station.capacity.as_dict().keys():
+        fc = forecaster.forecast_station_fuel(
+            station=target_station,
+            fuel=fuel,
+            history=history_records,
+            tick_minutes=snapshot.instance.tick_minutes,
+            horizon_ticks=settings.risk_horizon_ticks,
+            current_tick=snapshot.instance.tick,
+        )
+        r = risk_engine.assess_station_fuel_risk(
+            station=target_station,
+            fuel=fuel,
+            snapshot=snapshot,
+            forecast=fc,
+            demand_history=history_records,
+            data_age_seconds=data_age,
+            is_stale=is_stale,
+            horizon_ticks=settings.risk_horizon_ticks,
+        )
+        station_risks_dict[fuel.value] = r.model_dump(mode="json")
+
+        if r.severity == RiskSeverity.CRITICAL:
+            highest_sev = RiskSeverity.CRITICAL
+        elif r.severity == RiskSeverity.WATCH and highest_sev != RiskSeverity.CRITICAL:
+            highest_sev = RiskSeverity.WATCH
+
+        if r.severity in (RiskSeverity.CRITICAL, RiskSeverity.WATCH):
+            urgency = calculate_urgency_score(
+                severity=r.severity,
+                hours_to_stockout=r.hours_to_stockout,
+                current_fill_ratio=r.current_fill_ratio,
+                is_demand_spike=r.drivers.is_demand_spike,
+            )
+            if r.severity == RiskSeverity.CRITICAL and r.hours_to_stockout is not None:
+                headline = (
+                    f"CRITICAL: {target_station.name} {fuel.value} stockout "
+                    f"in {r.hours_to_stockout:.1f}h"
+                )
+            else:
+                headline = (
+                    f"{r.severity.value}: {target_station.name} {fuel.value} "
+                    f"at {r.current_fill_ratio:.1%} capacity"
+                )
+            station_alerts.append(
+                RiskAlert(
+                    station_id=station_id,
+                    station_name=target_station.name,
+                    fuel_type=fuel,
+                    severity=r.severity,
+                    hours_to_stockout=r.hours_to_stockout,
+                    first_stockout_tick=r.first_stockout_tick,
+                    current_fill_ratio=r.current_fill_ratio,
+                    urgency_score=urgency,
+                    headline=headline,
+                    explanation=r.explanation,
+                    created_tick=snapshot.instance.tick,
+                ).model_dump(mode="json")
+            )
+
+    station_alerts.sort(key=lambda a: a["urgency_score"], reverse=True)
+
+    return StationRiskResponse(
+        mode=diagnosis.mode,
+        reason=diagnosis.reason,
+        station_id=station_id,
+        station_name=target_station.name,
+        highest_severity=highest_sev.value,
+        risks=station_risks_dict,
+        alerts=station_alerts,
         evaluated_at=diagnosis.evaluated_at,
     )

@@ -18,6 +18,12 @@ def test_default_settings():
     assert settings.forecast_ewma_alpha == 0.3
     assert settings.forecast_history_limit == 300
     assert settings.forecast_spike_threshold_ratio == 1.35
+    assert settings.risk_horizon_ticks == 24
+    assert settings.risk_critical_hours == 3.0
+    assert settings.risk_critical_fill_ratio == 0.20
+    assert settings.risk_watch_hours == 8.0
+    assert settings.risk_watch_fill_ratio == 0.35
+    assert settings.risk_min_confidence == 0.60
     assert settings.circuit_breaker_failure_threshold == 5
     assert settings.circuit_breaker_recovery_timeout == 10.0
     assert settings.app_env == "development"
