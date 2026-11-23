@@ -105,5 +105,32 @@ Personal engineering log documenting architecture insights, simulator quirks, de
   - Full test suite now stands at **92 passed tests (92/92 green)** with 0 Ruff errors.
   - Validated live against the running simulator container: tested nominal operations and verified real-time escalation to `WATCH` and urgency alerts when injecting a $3.5\times$ demand spike.
 
+### Block 3: Dashboard v1 (Streamlit Thin Client)
+- **Thin Client Architecture & Resilient API Client:**
+  - Implemented `BackendApiClient` in `dashboard/client.py`: a resilient boundary wrapping `httpx.Client` with fast-fail connect timeouts (`connect=1.5s`), structured backend error decoding (`detail.message`), connection health tracking (`is_connected`), and comprehensive error handling preventing UI crashes.
+  - Enforced zero business logic in the UI: all forecasts, risk evaluations, circuit breaker states, and urgency scores are derived strictly from the FastAPI backend (`/health`, `/state`, `/forecasts`, `/risks`, `/sync`).
+- **High-Visibility Operational Mode Banner:**
+  - Renders top-level system status across `NORMAL` (green with circuit/data age telemetry), `DEGRADED_CACHED` (amber with cached snapshot age and breaker cooldown), `DEGRADED_FALLBACK` (red with heuristic indicators), and `DISCONNECTED` (red with actionable operator recovery tips).
+- **4-Column KPI Status Panel:**
+  - Upstream Simulator Gateway (circuit breaker state, failures count, cooldown remaining).
+  - State Repository (ingestion counter, snapshot freshness/staleness, data age, background poller lifecycle).
+  - Demand Intelligence (total fleet consumption rate in L/h, walk-forward out-of-sample MAE, MAPE %, active demand anomalies).
+  - Fleet Risk Overview (worst fleet severity tier, critical/watch alert counts, earliest stockout ETA).
+- **Priority Urgency Alert Deck:**
+  - Cards sorted strictly by scalar urgency score descending.
+  - Color-coded severity indicators (`CRITICAL`, `WATCH`, `OK`), stockout proximity timers, unavoidable shortage warnings, inventory vs capacity progress bars, burn rates, diagnostic root causes (`drivers.explanation`), confidence tiers, and human review mandates (`⚠️ HUMAN REVIEW MANDATED`).
+- **Tabbed Operational Views:**
+  - **Risk Matrix:** Color-coded table across all (station, fuel) pairs with soft background highlights (`CRITICAL` soft red, `WATCH` soft amber, `OK` soft green), fill ratios, stockout times, projected unmet demand, in-flight arrivals, and confidence levels.
+  - **Station Tanks:** Visual tank levels, fill ratios, and real-time demand multiplier spike badges (`🔥 DEMAND SPIKE ACTIVE`).
+  - **Bulk Depots:** Fuel inventories, dispatch capacity vs current dispatch load, and depot reserve warnings.
+  - **Logistics Routes:** Route availability, transit times/ticks, max shipment sizes, and active disruption warnings.
+  - **Simulation & Chaos Events:** Active injected spikes, route disruptions, shipment delays, and remaining ticks.
+- **Modern Auto-Refresh (`st.fragment`):**
+  - Utilized Streamlit's `@st.fragment(run_every=2)` for partial-DOM background updates without screen flickering or full-app rerun latency.
+- **Test Coverage & Verification:**
+  - Built `backend/tests/test_dashboard_client.py` (7 tests) and `backend/tests/test_dashboard_app.py` (11 tests).
+  - Verified with headless `streamlit.testing.v1.AppTest`: 0 exceptions, clean degraded/offline error rendering.
+  - Full automated test suite expanded to **110 passed tests (110/110 green)** with zero Ruff lint/format errors.
+
 
 
