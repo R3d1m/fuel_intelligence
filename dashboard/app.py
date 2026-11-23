@@ -14,7 +14,10 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from dashboard.client import ApiResponse, BackendApiClient
+try:
+    from dashboard.client import ApiResponse, BackendApiClient
+except ModuleNotFoundError:
+    from client import ApiResponse, BackendApiClient
 
 # Configure page layout and visual identity
 st.set_page_config(
