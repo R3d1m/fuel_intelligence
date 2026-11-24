@@ -129,6 +129,25 @@ class Settings(BaseSettings):
         description="Nominal target tank fill ratio when replenishing at-risk station inventory.",
     )
 
+    # Intelligence / Digital Twin
+    twin_trials: int = Field(
+        default=300,
+        ge=50,
+        le=2000,
+        description="Number of Monte Carlo forward simulation trials per scenario evaluation.",
+    )
+    twin_random_seed: int = Field(
+        default=42,
+        ge=0,
+        description="Fixed pseudorandom generator seed ensuring byte-identical determinism.",
+    )
+    twin_ci_percent: float = Field(
+        default=95.0,
+        gt=50.0,
+        lt=100.0,
+        description="Confidence interval width percentage (e.g. 95.0 for 95% CI).",
+    )
+
     # Resilience / Circuit Breaker
     circuit_breaker_failure_threshold: int = Field(
         default=5,

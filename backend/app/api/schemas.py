@@ -202,3 +202,34 @@ class PlanResponse(BaseModel):
     )
     summary: str = Field(..., description="Executive narrative summary of the plan.")
     evaluated_at: datetime = Field(..., description="UTC evaluation timestamp.")
+
+
+class TwinSimulateRequest(BaseModel):
+    """Request payload to execute a Monte Carlo digital twin forward simulation."""
+
+    station_id: str = Field(..., description="Target fuel station identifier.")
+    fuel_type: str = Field(
+        default="DIESEL", description="Fuel commodity type: DIESEL, PETROL, or OCTANE."
+    )
+    candidate_shipment_quantity: float = Field(
+        default=0.0, ge=0.0, description="Optional candidate shipment volume in liters."
+    )
+    candidate_arrival_tick: int | None = Field(
+        None, description="Optional simulation tick when candidate shipment arrives."
+    )
+    trials: int | None = Field(
+        None, ge=50, le=2000, description="Monte Carlo trial count override."
+    )
+    seed: int | None = Field(None, ge=0, description="Deterministic random seed override.")
+
+
+class TwinSimulationResponse(BaseModel):
+    """Comparative Monte Carlo digital twin forward simulation report."""
+
+    mode: OperationalMode = Field(
+        ...,
+        description="Authoritative operational mode: NORMAL, DEGRADED_CACHED, DEGRADED_FALLBACK.",
+    )
+    reason: str = Field(..., description="Diagnostic justification for current operational mode.")
+    simulation: dict[str, Any] = Field(..., description="Detailed comparative simulation metrics.")
+    evaluated_at: datetime = Field(..., description="UTC evaluation timestamp.")

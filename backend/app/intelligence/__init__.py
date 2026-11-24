@@ -31,15 +31,23 @@ from app.intelligence.risk import (
     RiskEngine,
     StationFuelRisk,
 )
+from app.intelligence.twin import (
+    ConfidenceInterval,
+    DigitalTwin,
+    ScenarioSimulation,
+    TwinSimulationResult,
+)
 
 __all__ = [
     "AnomalyReport",
     "AppliedConstraints",
     "CandidateImpact",
+    "ConfidenceInterval",
     "ConstrainedPlanner",
     "ConstraintType",
     "DemandForecaster",
     "DepotFuelRisk",
+    "DigitalTwin",
     "DispatchPlan",
     "FleetDemandForecast",
     "FleetRiskAssessment",
@@ -53,9 +61,11 @@ __all__ = [
     "RiskAlert",
     "RiskDrivers",
     "RiskEngine",
+    "ScenarioSimulation",
     "SharedCapacitySummary",
     "StationFuelForecast",
     "StationFuelRisk",
     "TwinEvaluatorProtocol",
+    "TwinSimulationResult",
     "UnmetTarget",
 ]

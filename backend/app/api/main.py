@@ -19,6 +19,7 @@ from app.ingest.store import StateStore
 from app.intelligence.forecast import DemandForecaster
 from app.intelligence.planner import ConstrainedPlanner
 from app.intelligence.risk import RiskEngine
+from app.intelligence.twin import DigitalTwin
 from app.resilience.breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ def create_app(
     forecaster: DemandForecaster | None = None,
     risk_engine: RiskEngine | None = None,
     planner: ConstrainedPlanner | None = None,
+    digital_twin: DigitalTwin | None = None,
     start_poller: bool = True,
 ) -> FastAPI:
     """Application factory for the Fuel Intelligence backend.
@@ -64,7 +66,10 @@ def create_app(
     )
     app_forecaster = forecaster or DemandForecaster(settings=cfg)
     app_risk_engine = risk_engine or RiskEngine(settings=cfg, forecaster=app_forecaster)
-    app_planner = planner or ConstrainedPlanner(settings=cfg, risk_engine=app_risk_engine)
+    app_twin = digital_twin or DigitalTwin(settings=cfg, forecaster=app_forecaster)
+    app_planner = planner or ConstrainedPlanner(
+        settings=cfg, risk_engine=app_risk_engine, twin_evaluator=app_twin
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> Any:
@@ -106,6 +111,7 @@ def create_app(
     app.state.poller = app_poller
     app.state.forecaster = app_forecaster
     app.state.risk_engine = app_risk_engine
+    app.state.digital_twin = app_twin
     app.state.planner = app_planner
 
     # Enable CORS for local dashboards and browser clients

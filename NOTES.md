@@ -182,6 +182,31 @@ Personal engineering log documenting architecture insights, simulator quirks, de
   - Built comprehensive test suite `backend/tests/test_planner.py` (16 unit and integration tests) verifying nominal allocation, urgency sorting, shared dispatch capacity quotas, depot inventory reserves, effective ullage overflow capping, route tanker limits, disrupted route avoidance, closed depot avoidance, timely vs partial mitigation, alternatives extraction, and REST API integration.
   - Full platform test suite now stands at **126 passed tests (126/126 green)** with zero Ruff lint/format errors.
 
+### Block 2: The Digital Twin (Monte Carlo Simulation)
+- **Vectorized Monte Carlo Forward Simulation:** Implemented `DigitalTwin` in `backend/app/intelligence/twin.py`:
+  - **Empirically Calibrated Stochastic Noise:** Generates Gaussian perturbation matrices ($\sim \mathcal{N}(0, \sigma_{\text{residual}}^2)$) scaled directly from walk-forward backtest error variance (`forecast.metrics.residual_std`).
+  - **Paired Counterfactual Scenarios:** Simulates hundreds of simultaneous forward paths (default: 300 trials) comparing:
+    1. *Baseline Scenario:* No intervention; projects natural inventory runout and stockout timing under demand uncertainty.
+    2. *Treatment Scenario:* Integrates candidate shipment arrival at specific delivery tick, evaluating residual risk.
+  - **Physical Tank Capacity Enforcement:** Clamps inventory at every forward step ($\min(\text{capacity}, \text{inventory} + \text{arrivals}_t)$), faithfully modeling tank ullage and avoiding phantom stock overflow.
+  - **Byte-Identical Determinism:** Uses NumPy's `default_rng(seed)` with configurable seed (`twin_random_seed: 42`) ensuring byte-identical reproducibility across independent runs.
+- **Uncertainty Quantification & Trajectory Confidence Bands:**
+  - **Stockout Probability ($P_{\text{stockout}}$):** Fraction of stochastic trials experiencing complete fuel depletion or unmet demand.
+  - **Expected Unmet Customer Demand:** Mean unserved liters across trials with empirical 95% confidence intervals ($[P_{2.5}, P_{97.5}]$).
+  - **Percentile Trajectories:** Extracts conservative $P_{10}$, median $P_{50}$, and optimistic $P_{90}$ inventory trajectories over future ticks for dashboard visualization.
+  - **Comparative Benefit Metrics:** Computes absolute stockout probability drop ($\Delta P = P_{\text{before}} - P_{\text{after}}$), relative risk reduction percentage, expected unmet demand reduction, and added hours of operational cover.
+- **Planner Protocol Integration:**
+  - `DigitalTwin` implements `TwinEvaluatorProtocol`, serving as the drop-in ranking evaluator for `ConstrainedPlanner`.
+  - Replaces provisional heuristic ranker with empirical Monte Carlo risk reduction numbers.
+  - Wired into `create_app()` factory in `backend/app/api/main.py` and `get_digital_twin` in `backend/app/api/deps.py`.
+- **REST Endpoints & Schemas:**
+  - Added `TwinSimulateRequest` and `TwinSimulationResponse` schemas in `backend/app/api/schemas.py`.
+  - Implemented `POST /twin/simulate` (interactive ad-hoc scenario evaluation) and `GET /twin/{station_id}/{fuel_type}` in `backend/app/api/routes.py`.
+- **Test Coverage & Verification:**
+  - Created test suite `backend/tests/test_twin.py` (13 tests) verifying fixed seed reproducibility, stochastic variation across seeds, significant stockout risk reduction, confidence interval ordering ($L \le M \le U$), trajectory percentiles ($P_{10} \le P_{50} \le P_{90}$), tank ullage capping, residual variance sensitivity, protocol conformance, planner integration, and API endpoints.
+  - Full automated platform test suite expanded to **139 passed tests (139/139 green)** with zero Ruff lint or format warnings.
+
+
 
 
 

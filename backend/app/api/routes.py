@@ -8,6 +8,7 @@ from app.adapters.simulator_client import SimulatorClient
 from app.api.deps import (
     get_app_settings,
     get_circuit_breaker,
+    get_digital_twin,
     get_forecaster,
     get_planner,
     get_poller,
@@ -27,14 +28,17 @@ from app.api.schemas import (
     StationRiskResponse,
     StoreDependencyHealth,
     SyncResponse,
+    TwinSimulateRequest,
+    TwinSimulationResponse,
 )
 from app.config import Settings
-from app.domain.models import DemandHistoryRecord, OperationalMode, RiskSeverity
+from app.domain.models import DemandHistoryRecord, FuelType, OperationalMode, RiskSeverity
 from app.ingest.poller import SimulatorPoller
 from app.ingest.store import StateStore
 from app.intelligence.forecast import DemandForecaster
 from app.intelligence.planner import ConstrainedPlanner
 from app.intelligence.risk import RiskAlert, RiskEngine, calculate_urgency_score
+from app.intelligence.twin import DigitalTwin
 from app.resilience.breaker import CircuitBreaker, CircuitState
 from app.resilience.mode import diagnose_operational_mode
 
@@ -669,4 +673,110 @@ async def get_dispatch_plan(
         shared_capacity_summary=serialized_summary,
         summary=plan.summary,
         evaluated_at=diagnosis.evaluated_at,
+    )
+
+
+@router.post(
+    "/twin/simulate",
+    response_model=TwinSimulationResponse,
+    summary="Monte Carlo Digital Twin Simulation",
+    description=(
+        "Executes paired Monte Carlo forward inventory simulations (baseline vs treatment) "
+        "calibrated with empirical forecast residuals and random seeds."
+    ),
+)
+async def simulate_digital_twin(
+    request: TwinSimulateRequest,
+    settings: Settings = Depends(get_app_settings),
+    store: StateStore = Depends(get_state_store),
+    breaker: CircuitBreaker = Depends(get_circuit_breaker),
+    twin: DigitalTwin = Depends(get_digital_twin),
+) -> TwinSimulationResponse:
+    """Run comparative digital twin simulation for a station and fuel."""
+    snapshot = store.get_effective_snapshot()
+    if snapshot is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No simulation snapshot available yet to execute digital twin.",
+        )
+
+    target_station = next((s for s in snapshot.stations if s.id == request.station_id), None)
+    if target_station is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Station '{request.station_id}' not found in current simulation topology.",
+        )
+
+    try:
+        fuel = FuelType(request.fuel_type.upper())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Invalid fuel type '{request.fuel_type}'. Must be DIESEL, PETROL, or OCTANE.",
+        ) from exc
+
+    cand_shipment = None
+    if request.candidate_shipment_quantity > 0.0:
+        arr_tick = (
+            request.candidate_arrival_tick
+            if request.candidate_arrival_tick is not None
+            else snapshot.instance.tick + 2
+        )
+        cand_shipment = (arr_tick, request.candidate_shipment_quantity)
+
+    diagnosis = diagnose_operational_mode(
+        breaker=breaker,
+        store=store,
+        forecaster_failed=False,
+        stale_threshold_seconds=settings.stale_threshold_seconds,
+    )
+
+    result = twin.compare_scenarios(
+        station=target_station,
+        fuel=fuel,
+        snapshot=snapshot,
+        candidate_shipment=cand_shipment,
+        horizon_ticks=settings.risk_horizon_ticks,
+        trials=request.trials or settings.twin_trials,
+        seed=request.seed if request.seed is not None else settings.twin_random_seed,
+    )
+
+    return TwinSimulationResponse(
+        mode=diagnosis.mode,
+        reason=diagnosis.reason,
+        simulation=result.model_dump(mode="json"),
+        evaluated_at=diagnosis.evaluated_at,
+    )
+
+
+@router.get(
+    "/twin/{station_id}/{fuel_type}",
+    response_model=TwinSimulationResponse,
+    summary="Station Fuel Digital Twin Simulation",
+    description="Runs forward Monte Carlo simulation for a specific station and fuel.",
+)
+async def get_station_fuel_twin(
+    station_id: str,
+    fuel_type: str,
+    trials: int | None = None,
+    seed: int | None = None,
+    settings: Settings = Depends(get_app_settings),
+    store: StateStore = Depends(get_state_store),
+    breaker: CircuitBreaker = Depends(get_circuit_breaker),
+    twin: DigitalTwin = Depends(get_digital_twin),
+) -> TwinSimulationResponse:
+    """Execute digital twin simulation for a station and fuel without candidate shipment."""
+    req = TwinSimulateRequest(
+        station_id=station_id,
+        fuel_type=fuel_type,
+        candidate_shipment_quantity=0.0,
+        trials=trials,
+        seed=seed,
+    )
+    return await simulate_digital_twin(
+        request=req,
+        settings=settings,
+        store=store,
+        breaker=breaker,
+        twin=twin,
     )

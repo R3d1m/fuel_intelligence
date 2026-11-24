@@ -15,6 +15,7 @@ from app.ingest.store import StateStore
 from app.intelligence.forecast import DemandForecaster
 from app.intelligence.planner import ConstrainedPlanner
 from app.intelligence.risk import RiskEngine
+from app.intelligence.twin import DigitalTwin
 from app.resilience.breaker import CircuitBreaker
 
 
@@ -57,8 +58,19 @@ def get_risk_engine(request: Request) -> RiskEngine:
     return RiskEngine(settings=get_app_settings(), forecaster=get_forecaster(request))
 
 
+def get_digital_twin(request: Request) -> DigitalTwin:
+    """Extract the DigitalTwin intelligence service from app.state."""
+    if hasattr(request.app.state, "digital_twin") and request.app.state.digital_twin is not None:
+        return cast(DigitalTwin, request.app.state.digital_twin)
+    return DigitalTwin(settings=get_app_settings(), forecaster=get_forecaster(request))
+
+
 def get_planner(request: Request) -> ConstrainedPlanner:
     """Extract the ConstrainedPlanner intelligence service from app.state."""
     if hasattr(request.app.state, "planner") and request.app.state.planner is not None:
         return cast(ConstrainedPlanner, request.app.state.planner)
-    return ConstrainedPlanner(settings=get_app_settings(), risk_engine=get_risk_engine(request))
+    return ConstrainedPlanner(
+        settings=get_app_settings(),
+        risk_engine=get_risk_engine(request),
+        twin_evaluator=get_digital_twin(request),
+    )
