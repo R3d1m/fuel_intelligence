@@ -175,3 +175,30 @@ class StationRiskResponse(BaseModel):
         default_factory=list, description="Active alerts for this station."
     )
     evaluated_at: datetime = Field(..., description="UTC evaluation timestamp.")
+
+
+class PlanResponse(BaseModel):
+    """Constrained greedy dispatch plan with alternatives and bottleneck analysis."""
+
+    mode: OperationalMode = Field(
+        ...,
+        description="Authoritative operational mode: NORMAL, DEGRADED_CACHED, DEGRADED_FALLBACK.",
+    )
+    reason: str = Field(..., description="Diagnostic justification for current operational mode.")
+    plan_id: str = Field(..., description="Unique generated plan identifier.")
+    created_tick: int = Field(..., description="Simulation tick at which plan was calculated.")
+    total_actions: int = Field(..., description="Count of planned allocation actions.")
+    total_liters_dispatched: float = Field(
+        ..., description="Total fuel volume in liters planned for dispatch."
+    )
+    actions: list[dict[str, Any]] = Field(
+        default_factory=list, description="Primary allocation actions with alternatives."
+    )
+    unmet_targets: list[dict[str, Any]] = Field(
+        default_factory=list, description="At-risk stations that could not be served."
+    )
+    shared_capacity_summary: dict[str, Any] = Field(
+        default_factory=dict, description="Audit of depot dispatch, inventory, and tank ullage."
+    )
+    summary: str = Field(..., description="Executive narrative summary of the plan.")
+    evaluated_at: datetime = Field(..., description="UTC evaluation timestamp.")

@@ -9,6 +9,7 @@ from app.api.deps import (
     get_app_settings,
     get_circuit_breaker,
     get_forecaster,
+    get_planner,
     get_poller,
     get_risk_engine,
     get_simulator_client,
@@ -17,6 +18,7 @@ from app.api.deps import (
 from app.api.schemas import (
     ForecastResponse,
     HealthResponse,
+    PlanResponse,
     PollerDependencyHealth,
     RiskResponse,
     SimulatorDependencyHealth,
@@ -31,6 +33,7 @@ from app.domain.models import DemandHistoryRecord, OperationalMode, RiskSeverity
 from app.ingest.poller import SimulatorPoller
 from app.ingest.store import StateStore
 from app.intelligence.forecast import DemandForecaster
+from app.intelligence.planner import ConstrainedPlanner
 from app.intelligence.risk import RiskAlert, RiskEngine, calculate_urgency_score
 from app.resilience.breaker import CircuitBreaker, CircuitState
 from app.resilience.mode import diagnose_operational_mode
@@ -565,5 +568,105 @@ async def get_station_risk(
         highest_severity=highest_sev.value,
         risks=station_risks_dict,
         alerts=station_alerts,
+        evaluated_at=diagnosis.evaluated_at,
+    )
+
+
+@router.get(
+    "/plan",
+    response_model=PlanResponse,
+    summary="Constrained Dispatch Optimization Plan",
+    description=(
+        "Generates a multi-constraint, urgency-ordered fuel dispatch plan "
+        "enforcing route tanker caps, depot reserves, shared dispatch quotas, "
+        "and station ullage with risk reduction alternatives."
+    ),
+)
+async def get_dispatch_plan(
+    settings: Settings = Depends(get_app_settings),
+    store: StateStore = Depends(get_state_store),
+    client: SimulatorClient = Depends(get_simulator_client),
+    breaker: CircuitBreaker = Depends(get_circuit_breaker),
+    forecaster: DemandForecaster = Depends(get_forecaster),
+    risk_engine: RiskEngine = Depends(get_risk_engine),
+    planner: ConstrainedPlanner = Depends(get_planner),
+) -> PlanResponse:
+    """Evaluate network risk and generate an optimized constrained dispatch plan."""
+    snapshot = store.get_effective_snapshot()
+    if snapshot is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No simulation snapshot available yet to formulate dispatch plan.",
+        )
+
+    history_records: list[DemandHistoryRecord] = []
+    if breaker.can_execute():
+        try:
+            resp = await client.get_demand_history(limit=settings.forecast_history_limit)
+            history_records = resp.data
+        except Exception as exc:
+            logger.warning("Failed to fetch demand history from simulator: %s", exc)
+
+    data_age = store.snapshot_age_seconds() or 0.0
+    is_stale = store.is_stale(stale_threshold_seconds=settings.stale_threshold_seconds)
+    planner_failed = False
+
+    try:
+        fleet_fc = forecaster.forecast_all(
+            snapshot=snapshot,
+            demand_history=history_records,
+            horizon_ticks=settings.risk_horizon_ticks,
+        )
+        fleet_risk = risk_engine.assess_fleet_risk(
+            snapshot=snapshot,
+            fleet_forecast=fleet_fc,
+            demand_history=history_records,
+            data_age_seconds=data_age,
+            is_stale=is_stale,
+            horizon_ticks=settings.risk_horizon_ticks,
+        )
+        plan = planner.generate_plan(
+            snapshot=snapshot,
+            fleet_risk=fleet_risk,
+        )
+    except Exception as exc:
+        logger.error("Planner encountered unexpected error: %s", exc)
+        planner_failed = True
+        # Fallback plan with empty or default risk assessment
+        fallback_risk = risk_engine.assess_fleet_risk(
+            snapshot=snapshot,
+            fleet_forecast=None,
+            demand_history=[],
+            data_age_seconds=data_age,
+            is_stale=is_stale,
+            horizon_ticks=settings.risk_horizon_ticks,
+        )
+        plan = planner.generate_plan(
+            snapshot=snapshot,
+            fleet_risk=fallback_risk,
+        )
+
+    diagnosis = diagnose_operational_mode(
+        breaker=breaker,
+        store=store,
+        forecaster_failed=planner_failed,
+        stale_threshold_seconds=settings.stale_threshold_seconds,
+    )
+
+    serialized_actions = [a.model_dump(mode="json") for a in plan.actions]
+    serialized_unmet = [u.model_dump(mode="json") for u in plan.unmet_targets]
+    serialized_summary = plan.shared_capacity_summary.model_dump(mode="json")
+
+    return PlanResponse(
+        mode=diagnosis.mode,
+        reason=diagnosis.reason,
+        plan_id=plan.plan_id,
+        created_tick=plan.created_tick,
+        total_actions=plan.total_actions,
+        total_liters_dispatched=plan.total_liters_dispatched,
+        actions=serialized_actions,
+        unmet_targets=serialized_unmet,
+        shared_capacity_summary=serialized_summary,
+        summary=plan.summary,
         evaluated_at=diagnosis.evaluated_at,
     )

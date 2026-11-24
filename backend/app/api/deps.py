@@ -13,6 +13,7 @@ from app.config import Settings, get_settings
 from app.ingest.poller import SimulatorPoller
 from app.ingest.store import StateStore
 from app.intelligence.forecast import DemandForecaster
+from app.intelligence.planner import ConstrainedPlanner
 from app.intelligence.risk import RiskEngine
 from app.resilience.breaker import CircuitBreaker
 
@@ -54,3 +55,10 @@ def get_risk_engine(request: Request) -> RiskEngine:
     if hasattr(request.app.state, "risk_engine") and request.app.state.risk_engine is not None:
         return cast(RiskEngine, request.app.state.risk_engine)
     return RiskEngine(settings=get_app_settings(), forecaster=get_forecaster(request))
+
+
+def get_planner(request: Request) -> ConstrainedPlanner:
+    """Extract the ConstrainedPlanner intelligence service from app.state."""
+    if hasattr(request.app.state, "planner") and request.app.state.planner is not None:
+        return cast(ConstrainedPlanner, request.app.state.planner)
+    return ConstrainedPlanner(settings=get_app_settings(), risk_engine=get_risk_engine(request))

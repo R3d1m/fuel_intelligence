@@ -111,6 +111,24 @@ class Settings(BaseSettings):
         description="Minimum confidence score below which human review is mandated.",
     )
 
+    # Intelligence / Constrained Planner
+    planner_depot_reserve_liters: float = Field(
+        default=5000.0,
+        ge=0.0,
+        description="Buffer in liters held back at depots and unavailable for dispatch.",
+    )
+    planner_min_shipment_liters: float = Field(
+        default=500.0,
+        ge=0.0,
+        description="Minimum shipment threshold in liters below which allocations are omitted.",
+    )
+    planner_target_fill_ratio: float = Field(
+        default=0.85,
+        ge=0.1,
+        le=1.0,
+        description="Nominal target tank fill ratio when replenishing at-risk station inventory.",
+    )
+
     # Resilience / Circuit Breaker
     circuit_breaker_failure_threshold: int = Field(
         default=5,

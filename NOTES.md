@@ -146,6 +146,43 @@ Personal engineering log documenting architecture insights, simulator quirks, de
   - Successfully built both images using `docker compose build`.
   - Started the full 3-container stack and verified all three services report `healthy` with clean compose networking.
 
+---
+
+## Day 3
+
+### Block 1: The Constrained Greedy Planner
+- **Multi-Constraint Optimization Engine:** Implemented `ConstrainedPlanner` in `backend/app/intelligence/planner.py`:
+  - **Urgency-Ordered Greedy Prioritization:** Evaluates at-risk `(station, fuel)` targets sorted strictly by continuous scalar urgency score descending (broken by stockout proximity and unmet liters).
+  - **5 Simultaneous Physical & Operational Constraints:** Computes exact allocation volume as the minimum of:
+    1. Route maximum tanker capacity (`route.max_shipment`).
+    2. Available depot inventory above configured operational reserve (`planner_depot_reserve_liters`).
+    3. Remaining depot dispatch capacity in departure tick (`depot.dispatch_capacity_per_tick` minus commitments).
+    4. Effective station tank free space (`station.effective_free_capacity`), accounting for in-transit and pending fuel to prevent post-arrival overflow.
+    5. Net replenishment deficit (`amount_needed`) based on projected unmet demand and nominal target fill level (`planner_target_fill_ratio`).
+  - **Active Bottleneck Attribution:** Accurately identifies which of the 5 bounds formed the binding constraint (`bottleneck_constraint`) and exports complete constraint audits for operator transparency.
+- **Feasibility & Arrival Mitigation Timing:**
+  - Compares projected shipment arrival tick ($\text{departure} + \text{transit\_ticks}$) against station first stockout tick:
+    - `FULL_PREVENTION`: Arrival $\le \text{first\_stockout\_tick}$, eliminating shortage before tank runs dry.
+    - `PARTIAL_MITIGATION`: Arrival $> \text{first\_stockout\_tick}$, terminates shortage and computes exact unavoidable shortage hours.
+    - `PREVENTATIVE_RESTOCK`: Proactive replenishment for low-tank WATCH status with no projected stockout.
+- **Shared State Bookkeeping:**
+  - Solves the multi-destination shared capacity challenge: dynamically decrements shared depot dispatch capacity, depot inventory per fuel, and destination station free space as greedy choices are made, preventing concurrent over-commitments.
+  - Summarizes network-wide capacity utilization in `SharedCapacitySummary`.
+- **Candidate Ranking & Pluggable Digital Twin Protocol:**
+  - Designed `TwinEvaluatorProtocol` with baseline `HeuristicTwinEvaluator` scoring candidate options on unmet demand reduction, hours of cover added, delivery timeliness, and route transit duration.
+  - Prepared architectural drop-in interface for Day 3 Block 2 Monte Carlo digital twin (`twin.py`).
+  - For every recommended action, captures the primary top choice along with the next 2 highest-ranked alternative routes/depots, including rationale for why they were not chosen.
+- **Diagnostic Root-Cause Tracking for Unmet Demands:**
+  - Records unserved at-risk stations in `unmet_targets` with structured failure codes (`ALL_ROUTES_DISRUPTED`, `DEPOT_OR_ROUTE_CONSTRAINED`, `STATION_FULL`, `BELOW_MIN_SHIPMENT`) and actionable operator explanations.
+- **REST Endpoints & Domain Schemas:**
+  - Added `PlanResponse` schema in `backend/app/api/schemas.py`.
+  - Added `GET /plan` endpoint in `backend/app/api/routes.py` with operational mode diagnostics and fallback resilience.
+  - Added dependency injection provider `get_planner` in `backend/app/api/deps.py` and factory wiring in `main.py`.
+- **Test Coverage & Verification:**
+  - Built comprehensive test suite `backend/tests/test_planner.py` (16 unit and integration tests) verifying nominal allocation, urgency sorting, shared dispatch capacity quotas, depot inventory reserves, effective ullage overflow capping, route tanker limits, disrupted route avoidance, closed depot avoidance, timely vs partial mitigation, alternatives extraction, and REST API integration.
+  - Full platform test suite now stands at **126 passed tests (126/126 green)** with zero Ruff lint/format errors.
+
+
 
 
 

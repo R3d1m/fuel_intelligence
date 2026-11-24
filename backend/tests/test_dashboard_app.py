@@ -34,34 +34,40 @@ def test_render_operational_mode_banner() -> None:
 
     # 2. NORMAL
     with patch("streamlit.success") as mock_succ:
-        render_operational_mode_banner({
-            "mode": "NORMAL",
-            "reason": "Optimal health",
-            "simulator": {"circuit_state": "CLOSED"},
-            "store": {"data_age_seconds": 1.2},
-        })
+        render_operational_mode_banner(
+            {
+                "mode": "NORMAL",
+                "reason": "Optimal health",
+                "simulator": {"circuit_state": "CLOSED"},
+                "store": {"data_age_seconds": 1.2},
+            }
+        )
         mock_succ.assert_called_once()
         assert "MODE: NORMAL" in mock_succ.call_args[0][0]
 
     # 3. DEGRADED_CACHED
     with patch("streamlit.warning") as mock_warn:
-        render_operational_mode_banner({
-            "mode": "DEGRADED_CACHED",
-            "reason": "Simulator 503 fault",
-            "simulator": {"circuit_state": "OPEN"},
-            "store": {"data_age_seconds": 14.5},
-        })
+        render_operational_mode_banner(
+            {
+                "mode": "DEGRADED_CACHED",
+                "reason": "Simulator 503 fault",
+                "simulator": {"circuit_state": "OPEN"},
+                "store": {"data_age_seconds": 14.5},
+            }
+        )
         mock_warn.assert_called_once()
         assert "MODE: DEGRADED_CACHED" in mock_warn.call_args[0][0]
 
     # 4. DEGRADED_FALLBACK
     with patch("streamlit.error") as mock_err:
-        render_operational_mode_banner({
-            "mode": "DEGRADED_FALLBACK",
-            "reason": "Forecaster failed",
-            "simulator": {"circuit_state": "CLOSED"},
-            "store": {},
-        })
+        render_operational_mode_banner(
+            {
+                "mode": "DEGRADED_FALLBACK",
+                "reason": "Forecaster failed",
+                "simulator": {"circuit_state": "CLOSED"},
+                "store": {},
+            }
+        )
         mock_err.assert_called_once()
         assert "MODE: DEGRADED_FALLBACK" in mock_err.call_args[0][0]
 
