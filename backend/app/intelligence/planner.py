@@ -556,8 +556,8 @@ class ConstrainedPlanner:
         targets: list[tuple[Station, FuelType, StationFuelRisk, float]] = []
 
         for station in snapshot.stations:
-            # Skip completely closed stations
-            if station.status == StationStatus.CLOSED:
+            # Skip closed or outage stations
+            if station.status in (StationStatus.CLOSED, StationStatus.OUTAGE, "OUTAGE"):
                 continue
 
             for fuel in (FuelType.DIESEL, FuelType.PETROL, FuelType.OCTANE):

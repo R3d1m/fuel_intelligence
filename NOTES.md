@@ -304,6 +304,32 @@ Personal engineering log documenting architecture insights, simulator quirks, de
   - Expanded `backend/tests/test_api_endpoints.py` (18 tests) with tests for degraded cached mode on malformed snapshot rejection and degraded fallback recommendation generation.
   - Full automated platform test suite expanded to **178 passed tests (178/178 green)** with zero Ruff lint or format warnings.
 
+### Block 5: Fault Drills & Day 3 Checkpoint Verification
+- **Automated Fault Drills Harness (`tools/run_fault_drills.py`):**
+  - Built an automated end-to-end test harness exercising all 10 resilience drills and fault scenarios directly against the live simulator container (`http://localhost:8000`):
+    1. `unavailable`: Injected HTTP 503 outage via `/admin/faults`; retries exhausted with exponential backoff; circuit breaker tripped `CLOSED -> OPEN`; cached snapshot served with `DEGRADED_CACHED` mode; automatic recovery confirmed upon fault clearance.
+    2. `error_rate`: Injected 50% random failure rate; jittered exponential backoff retries absorbed all 503s across 6 polling cycles without dropping requests or tripping breaker.
+    3. `latency`: Injected +1200ms artificial delay; requests completed cleanly within client timeout budgets ($5.0\text{s}$) without hanging the server or poller.
+    4. `stale_data`: Detected upstream `X-Simulator-Stale: true` response header; flagged `is_stale=True`; surfaced `STALE_DATA` alert; enabled `DEGRADED_CACHED` mode.
+    5. `stream_disconnect`: Simulated SSE stream disconnect; verified background REST polling operates independently without data starvation.
+    6. `route_disruption`: Injected corridor disruption on `route-gazipur-mirpur`; planner dynamically pruned the blocked corridor and rerouted dispatches through available alternate corridors.
+    7. `shipment_delay`: Injected +3 tick transit delay; lead-time recalculation factored delay into delivery horizons; digital twin stockout projections updated.
+    8. `station_outage`: Injected station outage on `station-tongi`; updated `StationStatus` with `OUTAGE`; verified zero dispatches targeted the inactive station.
+    9. `forecaster_kill`: Simulated internal ML NaN crash; platform transitioned to `DEGRADED_FALLBACK`; activated rule-based emergency heuristic (<20% fill threshold); assigned low confidence ($0.25$) and flagged `needs_human_review=True`; verified `FALLBACK_POLICY_ACTIVATED` event logged to SQLite audit ledger.
+    10. `day3_checkpoint_story`: Completed full 11-step operational story (Normal -> demand spike -> critical risk alert -> recommendation formulation with Monte Carlo twin impact -> operator approval & submission -> shipment in-transit -> route disruption -> re-plan -> upstream simulator outage -> cached state serving -> fault clearance & recovery).
+- **Domain Model & Intelligence Enhancements:**
+  - Added `OUTAGE = "OUTAGE"` to `StationStatus` enum in `backend/app/domain/models.py`.
+  - Updated `ConstrainedPlanner` station filtering to prune stations with status in `(StationStatus.CLOSED, StationStatus.OUTAGE, "OUTAGE")`.
+  - Updated `FallbackPlanner` in `backend/app/intelligence/fallback.py` to skip closed or outage stations.
+- **Integration Test Suite (`backend/tests/test_fault_drills.py`):**
+  - Created 4 standalone integration tests verifying circuit breaker trip/recovery, route disruption corridor bypass, station outage suppression, and forecaster kill with fallback heuristic & audit logging.
+- **Empirical Evidence Documentation (`docs/EVIDENCE.md`):**
+  - Updated Section 2 with complete fault drill matrix, detailed execution logs, and full Day 3 checkpoint story walkthrough.
+- **Test Coverage & Verification:**
+  - Full automated platform test suite expanded to **182 passed tests (182/182 green)** in $8.66\text{s}$.
+  - Live automated fault runner `tools/run_fault_drills.py` executed all 10 drills: **10/10 PASSED (code 0)**.
+  - Ruff linting and formatting: 100% clean (64 files checked, 0 errors).
+
 ---
 
 

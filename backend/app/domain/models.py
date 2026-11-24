@@ -33,6 +33,7 @@ class StationStatus(StrEnum):
     OPEN = "OPEN"
     CONSTRAINED = "CONSTRAINED"
     CLOSED = "CLOSED"
+    OUTAGE = "OUTAGE"
 
 
 class RouteStatus(StrEnum):

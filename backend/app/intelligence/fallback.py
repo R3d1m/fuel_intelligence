@@ -31,6 +31,7 @@ from app.domain.models import (
     RouteStatus,
     SimulatorSnapshot,
     Station,
+    StationStatus,
 )
 from app.intelligence.planner import (
     AppliedConstraints,
@@ -128,6 +129,10 @@ class FallbackPlanner:
         at_risk_targets: list[dict[str, Any]] = []
 
         for station in snapshot.stations:
+            # Skip closed or outage stations
+            if station.status in (StationStatus.CLOSED, StationStatus.OUTAGE, "OUTAGE", "CLOSED"):
+                continue
+
             for fuel in FuelType:
                 cap = station.capacity.get(fuel, 0.0)
                 if cap <= 0.0:
@@ -197,6 +202,10 @@ class FallbackPlanner:
         # C. Station Effective Tank Ullage (avoiding tank overflow)
         remaining_station_ullage: dict[tuple[str, FuelType], float] = {}
         for station in snapshot.stations:
+            # Skip closed or outage stations
+            if station.status in (StationStatus.CLOSED, StationStatus.OUTAGE, "OUTAGE", "CLOSED"):
+                continue
+
             for fuel in FuelType:
                 cap = station.capacity.get(fuel, 0.0)
                 eff_inv = station.inventory.get(fuel, 0.0) + in_transit_by_target.get(
