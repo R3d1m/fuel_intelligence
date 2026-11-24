@@ -148,7 +148,7 @@ class Settings(BaseSettings):
         description="Confidence interval width percentage (e.g. 95.0 for 95% CI).",
     )
 
-    # Resilience / Circuit Breaker
+    # Resilience / Circuit Breaker & Fallback Modes
     circuit_breaker_failure_threshold: int = Field(
         default=5,
         ge=1,
@@ -158,6 +158,37 @@ class Settings(BaseSettings):
         default=10.0,
         gt=0.0,
         description="Cooldown duration in seconds before HALF_OPEN probe is allowed.",
+    )
+    fallback_critical_fill_ratio: float = Field(
+        default=0.20,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Tank fill ratio threshold below which fallback policy marks a tank as CRITICAL."
+        ),
+    )
+    fallback_watch_fill_ratio: float = Field(
+        default=0.35,
+        ge=0.0,
+        le=1.0,
+        description="Tank fill ratio threshold below which fallback policy marks a tank as WATCH.",
+    )
+    fallback_model_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0.0,
+        description=(
+            "Timeout in seconds for risky intelligence calls before triggering fallback policy."
+        ),
+    )
+
+    # Decisions / Audit Ledger
+    audit_db_path: str = Field(
+        default="data/decisions.db",
+        description="Path to SQLite database file for decisions and audit logging.",
+    )
+    auto_approve_enabled: bool = Field(
+        default=False,
+        description="Whether auto-approval mode is enabled (for automated evaluation harnesses).",
     )
 
     # Service Runtime

@@ -155,3 +155,62 @@ def test_client_timeout_error(client: BackendApiClient) -> None:
     assert resp.success is False
     assert resp.is_connected is False
     assert "timed out" in (resp.error or "")
+
+
+@respx.mock
+def test_recommendations_and_audit_methods(client: BackendApiClient) -> None:
+    base = "http://mock-backend:8001"
+
+    # get_recommendations
+    respx.get(f"{base}/recommendations").mock(
+        return_value=httpx.Response(200, json={"total_count": 1, "recommendations": []})
+    )
+    rec_resp = client.get_recommendations(status="PROPOSED")
+    assert rec_resp.success is True
+    assert rec_resp.data["total_count"] == 1
+
+    # generate_recommendations
+    respx.post(f"{base}/recommendations/generate").mock(
+        return_value=httpx.Response(200, json={"total_count": 2, "recommendations": []})
+    )
+    gen_resp = client.generate_recommendations()
+    assert gen_resp.success is True
+    assert gen_resp.data["total_count"] == 2
+
+    # approve_recommendation
+    respx.post(f"{base}/recommendations/rec_1/approve").mock(
+        return_value=httpx.Response(
+            200,
+            json={"recommendation": {"recommendation_id": "rec_1", "status": "SUBMITTED"}},
+        )
+    )
+    app_resp = client.approve_recommendation("rec_1", operator_notes="Approve test")
+    assert app_resp.success is True
+    assert app_resp.data["recommendation"]["status"] == "SUBMITTED"
+
+    # reject_recommendation
+    respx.post(f"{base}/recommendations/rec_1/reject").mock(
+        return_value=httpx.Response(
+            200,
+            json={"recommendation": {"recommendation_id": "rec_1", "status": "REJECTED"}},
+        )
+    )
+    rej_resp = client.reject_recommendation("rec_1", operator_notes="Reject test")
+    assert rej_resp.success is True
+    assert rej_resp.data["recommendation"]["status"] == "REJECTED"
+
+    # get_audit_history
+    respx.get(f"{base}/decisions/audit").mock(
+        return_value=httpx.Response(200, json={"total_events": 5, "events": []})
+    )
+    audit_resp = client.get_audit_history(limit=10)
+    assert audit_resp.success is True
+    assert audit_resp.data["total_events"] == 5
+
+    # get_audit_stats
+    respx.get(f"{base}/decisions/stats").mock(
+        return_value=httpx.Response(200, json={"stats": {"total_recommendations": 3}})
+    )
+    stats_resp = client.get_audit_stats()
+    assert stats_resp.success is True
+    assert stats_resp.data["stats"]["total_recommendations"] == 3

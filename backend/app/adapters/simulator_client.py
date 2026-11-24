@@ -468,6 +468,23 @@ class SimulatorClient:
         }
         return await self.post("/admin/faults", json=payload)
 
+    async def admin_inject_event(
+        self,
+        event_type: str,
+        start_tick: int,
+        duration_ticks: int,
+        parameters: dict[str, Any] | None = None,
+    ) -> SimulatorResponse[dict[str, Any]]:
+        """Inject a scenario simulation event into the environment."""
+        e_type = event_type.value if hasattr(event_type, "value") else str(event_type)
+        payload: dict[str, Any] = {
+            "type": e_type,
+            "start_tick": start_tick,
+            "duration_ticks": duration_ticks,
+            "parameters": parameters or {},
+        }
+        return await self.post("/admin/events", json=payload)
+
     async def admin_clear_faults(self) -> SimulatorResponse[dict[str, Any]]:
         """Clear all active simulator faults immediately."""
         return await self.post("/admin/faults/clear")

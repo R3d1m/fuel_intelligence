@@ -7,6 +7,7 @@ from app.resilience.breaker import (
 )
 from app.resilience.mode import (
     ModeDiagnosis,
+    ResilienceManager,
     compute_operational_mode,
     diagnose_operational_mode,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "CircuitBreakerOpenError",
     "CircuitState",
     "ModeDiagnosis",
+    "ResilienceManager",
     "compute_operational_mode",
     "diagnose_operational_mode",
 ]

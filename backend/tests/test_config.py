@@ -26,6 +26,9 @@ def test_default_settings():
     assert settings.risk_min_confidence == 0.60
     assert settings.circuit_breaker_failure_threshold == 5
     assert settings.circuit_breaker_recovery_timeout == 10.0
+    assert settings.fallback_critical_fill_ratio == 0.20
+    assert settings.fallback_watch_fill_ratio == 0.35
+    assert settings.fallback_model_timeout_seconds == 5.0
     assert settings.app_env == "development"
     assert settings.log_level == "INFO"
     assert settings.port == 8001

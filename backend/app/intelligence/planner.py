@@ -23,7 +23,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -169,6 +169,10 @@ class PlanAction(BaseModel):
     impact: CandidateImpact
     alternatives: list[PlanActionAlternative] = Field(default_factory=list)
     explanation: str
+    confidence_score: float = 0.95
+    confidence_level: str = "HIGH"
+    needs_human_review: bool = False
+    is_fallback: bool = False
 
 
 class UnmetTarget(BaseModel):
@@ -219,6 +223,8 @@ class DispatchPlan(BaseModel):
     unmet_targets: list[UnmetTarget] = Field(default_factory=list)
     shared_capacity_summary: SharedCapacitySummary
     summary: str
+    is_fallback: bool = False
+    fallback_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -382,10 +388,21 @@ class ConstrainedPlanner:
         settings: Settings | None = None,
         risk_engine: RiskEngine | None = None,
         twin_evaluator: TwinEvaluatorProtocol | None = None,
+        fallback_planner: Any = None,
+        resilience_manager: Any = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.risk_engine = risk_engine or RiskEngine(settings=self.settings)
         self.twin_evaluator = twin_evaluator or HeuristicTwinEvaluator()
+        self._heuristic_twin = HeuristicTwinEvaluator()
+        self.resilience_manager = resilience_manager
+
+        if fallback_planner is not None:
+            self.fallback_planner = fallback_planner
+        else:
+            from app.intelligence.fallback import FallbackPlanner
+
+            self.fallback_planner = FallbackPlanner(settings=self.settings)
 
     def generate_plan(
         self,
@@ -395,8 +412,25 @@ class ConstrainedPlanner:
         min_shipment_liters: float | None = None,
         target_fill_ratio: float | None = None,
         include_watch: bool = True,
+        force_fallback: bool = False,
     ) -> DispatchPlan:
         """Generate a complete constrained dispatch plan for the current simulation state."""
+        # Check if model degradation or force_fallback necessitates fallback heuristic
+        is_model_failed = self.resilience_manager is not None and getattr(
+            self.resilience_manager, "is_model_failed", False
+        )
+        if force_fallback or is_model_failed:
+            logger.warning(
+                "Model degradation detected (or force_fallback=True). "
+                "Delegating dispatch planning to FallbackPlanner."
+            )
+            return self.fallback_planner.generate_plan(
+                snapshot=snapshot,
+                fallback_reason=(
+                    "Intelligence models offline/degraded; active fallback policy triggered"
+                ),
+            )
+
         current_tick = snapshot.instance.tick
         tick_minutes = snapshot.instance.tick_minutes
         plan_id = f"plan-t{current_tick}-{uuid.uuid4().hex[:8]}"
@@ -417,12 +451,26 @@ class ConstrainedPlanner:
             else self.settings.planner_target_fill_ratio
         )
 
-        # 1. Obtain or compute fleet-wide risk assessment
+        # 1. Obtain or compute fleet-wide risk assessment with fail-safe guard
         if fleet_risk is None:
-            fleet_risk = self.risk_engine.assess_fleet_risk(
-                snapshot=snapshot,
-                horizon_ticks=self.settings.risk_horizon_ticks,
-            )
+            try:
+                fleet_risk = self.risk_engine.assess_fleet_risk(
+                    snapshot=snapshot,
+                    horizon_ticks=self.settings.risk_horizon_ticks,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Fleet risk assessment failed in ConstrainedPlanner (%s: %s). "
+                    "Falling back to emergency policy.",
+                    type(exc).__name__,
+                    exc,
+                )
+                if self.resilience_manager:
+                    self.resilience_manager.record_forecaster_failure(str(exc))
+                return self.fallback_planner.generate_plan(
+                    snapshot=snapshot,
+                    fallback_reason=f"Risk engine/forecaster failed: {exc}",
+                )
 
         # 2. Build index maps for fast lookup
         depot_map: dict[str, Depot] = {d.id: d for d in snapshot.depots}
@@ -743,18 +791,41 @@ class ConstrainedPlanner:
                     mitigation_type = MitigationType.PREVENTATIVE_RESTOCK
                     unavoidable_hours = None
 
-                # Twin / Heuristic Benefit Evaluation
-                impact = self.twin_evaluator.evaluate(
-                    candidate_quantity=allocated_qty,
-                    route=route,
-                    station=station,
-                    fuel=fuel,
-                    snapshot=snapshot,
-                    risk=risk,
-                    departure_tick=departure_tick,
-                    arrival_tick=arrival_tick,
-                    is_timely=is_timely,
-                )
+                # Twin / Heuristic Benefit Evaluation with defensive fallback
+                try:
+                    impact = self.twin_evaluator.evaluate(
+                        candidate_quantity=allocated_qty,
+                        route=route,
+                        station=station,
+                        fuel=fuel,
+                        snapshot=snapshot,
+                        risk=risk,
+                        departure_tick=departure_tick,
+                        arrival_tick=arrival_tick,
+                        is_timely=is_timely,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Twin evaluation failed for route %s to %s (%s: %s). "
+                        "Falling back to heuristic evaluation.",
+                        route.id,
+                        station.id,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    if self.resilience_manager:
+                        self.resilience_manager.record_twin_failure(str(exc))
+                    impact = self._heuristic_twin.evaluate(
+                        candidate_quantity=allocated_qty,
+                        route=route,
+                        station=station,
+                        fuel=fuel,
+                        snapshot=snapshot,
+                        risk=risk,
+                        departure_tick=departure_tick,
+                        arrival_tick=arrival_tick,
+                        is_timely=is_timely,
+                    )
 
                 evaluated_candidates.append(
                     _CandidateEvaluation(

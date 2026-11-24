@@ -9,10 +9,15 @@ import respx
 from app.adapters.simulator_client import SimulatorClient
 from app.api.main import create_app
 from app.config import Settings
+from app.decisions.audit import AuditLedger
 from app.domain.models import (
+    Depot,
+    DepotStatus,
     FuelMap,
     InstanceInfo,
     OperationalMode,
+    Route,
+    RouteStatus,
     SimulatorSnapshot,
     Station,
     StationStatus,
@@ -55,17 +60,20 @@ def test_setup() -> dict[str, Any]:
         stale_threshold_seconds=10.0,
         circuit_breaker_failure_threshold=3,
         circuit_breaker_recovery_timeout=5.0,
+        audit_db_path=":memory:",
     )
     client = SimulatorClient(base_url="http://test-sim:8000")
     store = StateStore()
     breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=5.0, name="test-breaker")
     poller = SimulatorPoller(client=client, store=store, breaker=breaker, settings=settings)
+    audit_ledger = AuditLedger(db_path=":memory:")
     app = create_app(
         settings=settings,
         client=client,
         store=store,
         breaker=breaker,
         poller=poller,
+        audit_ledger=audit_ledger,
         start_poller=False,
     )
     return {
@@ -74,6 +82,7 @@ def test_setup() -> dict[str, Any]:
         "breaker": breaker,
         "poller": poller,
         "client": client,
+        "audit_ledger": audit_ledger,
         "settings": settings,
     }
 
@@ -432,3 +441,288 @@ async def test_station_risk_endpoint(test_setup: dict[str, Any]) -> None:
         # 404 for unknown station
         resp_404 = await client.get("/risks/unknown-station")
         assert resp_404.status_code == 404
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_recommendations_generate_and_list_endpoints(test_setup: dict[str, Any]) -> None:
+    app = test_setup["app"]
+    store: StateStore = test_setup["store"]
+    base = "http://test-sim:8000"
+
+    respx.get(f"{base}/v1/demand-history").respond(json=[])
+
+    depot = Depot(
+        id="depot-1",
+        name="Central Depot",
+        region_id="reg-1",
+        status=DepotStatus.OPEN,
+        capacity=FuelMap(DIESEL=50000, PETROL=30000, OCTANE=20000),
+        inventory=FuelMap(DIESEL=30000, PETROL=20000, OCTANE=15000),
+        dispatch_capacity_per_tick=20000.0,
+    )
+    station = Station(
+        id="station-1",
+        name="Mirpur Station",
+        region_id="reg-1",
+        status=StationStatus.OPEN,
+        demand_profile="urban_high",
+        demand_multiplier=1.0,
+        capacity=FuelMap(DIESEL=20000, PETROL=10000, OCTANE=8000),
+        inventory=FuelMap(DIESEL=1200, PETROL=5000, OCTANE=4000),  # < 20% -> CRITICAL
+    )
+    route = Route(
+        id="route-1",
+        source_depot_id="depot-1",
+        destination_station_id="station-1",
+        transit_ticks=2,
+        max_shipment=15000.0,
+        status=RouteStatus.AVAILABLE,
+    )
+
+    snapshot = _make_dummy_snapshot()
+    snapshot.depots = [depot]
+    snapshot.stations = [station]
+    snapshot.routes = [route]
+    store.update(snapshot)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Initial empty list
+        resp = await client.get("/recommendations")
+        assert resp.status_code == 200
+        assert resp.json()["total_count"] == 0
+
+        # Generate recommendations
+        gen_resp = await client.post("/recommendations/generate")
+        assert gen_resp.status_code == 200
+        gen_data = gen_resp.json()
+        assert gen_data["total_count"] >= 1
+        rec = gen_data["recommendations"][0]
+        rec_id = rec["recommendation_id"]
+        assert rec["station_id"] == "station-1"
+        assert rec["fuel_type"] == "DIESEL"
+        assert rec["status"] == "PROPOSED"
+
+        # Fetch single recommendation by ID
+        get_resp = await client.get(f"/recommendations/{rec_id}")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["recommendation"]["recommendation_id"] == rec_id
+
+        # 404 for unknown recommendation ID
+        resp_404 = await client.get("/recommendations/rec_nonexistent")
+        assert resp_404.status_code == 404
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_recommendation_approve_and_reject_endpoints(test_setup: dict[str, Any]) -> None:
+    app = test_setup["app"]
+    store: StateStore = test_setup["store"]
+    base = "http://test-sim:8000"
+
+    respx.get(f"{base}/v1/demand-history").respond(json=[])
+
+    depot = Depot(
+        id="depot-1",
+        name="Central Depot",
+        region_id="reg-1",
+        status=DepotStatus.OPEN,
+        capacity=FuelMap(DIESEL=50000, PETROL=30000, OCTANE=20000),
+        inventory=FuelMap(DIESEL=30000, PETROL=20000, OCTANE=15000),
+        dispatch_capacity_per_tick=20000.0,
+    )
+    station = Station(
+        id="station-1",
+        name="Mirpur Station",
+        region_id="reg-1",
+        status=StationStatus.OPEN,
+        demand_profile="urban_high",
+        demand_multiplier=1.0,
+        capacity=FuelMap(DIESEL=20000, PETROL=10000, OCTANE=8000),
+        inventory=FuelMap(DIESEL=1200, PETROL=5000, OCTANE=4000),
+    )
+    route = Route(
+        id="route-1",
+        source_depot_id="depot-1",
+        destination_station_id="station-1",
+        transit_ticks=2,
+        max_shipment=15000.0,
+        status=RouteStatus.AVAILABLE,
+    )
+    snapshot = _make_dummy_snapshot()
+    snapshot.depots = [depot]
+    snapshot.stations = [station]
+    snapshot.routes = [route]
+    store.update(snapshot)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Generate recommendation
+        gen_resp = await client.post("/recommendations/generate")
+        recs = gen_resp.json()["recommendations"]
+        rec_id = recs[0]["recommendation_id"]
+
+        # Mock simulator allocation creation success
+        respx.post(f"{base}/v1/allocations").respond(
+            status_code=201,
+            json={
+                "id": 101,
+                "idempotency_key": recs[0]["idempotency_key"],
+                "source_depot_id": "depot-1",
+                "destination_station_id": "station-1",
+                "route_id": "route-1",
+                "fuel_type": "DIESEL",
+                "quantity": recs[0]["quantity_liters"],
+                "created_tick": 15,
+                "departure_tick": 16,
+                "expected_arrival_tick": 18,
+                "status": "PENDING",
+            },
+        )
+
+        # Approve recommendation
+        app_resp = await client.post(
+            f"/recommendations/{rec_id}/approve",
+            json={"operator_notes": "Approved for dispatch"},
+        )
+        assert app_resp.status_code == 200
+        rec_approved = app_resp.json()["recommendation"]
+        assert rec_approved["status"] == "SUBMITTED"
+        assert rec_approved["simulator_allocation_id"] == 101
+
+        # Reject should now fail with 400 because already submitted
+        rej_resp = await client.post(
+            f"/recommendations/{rec_id}/reject",
+            json={"operator_notes": "Trying to reject submitted"},
+        )
+        assert rej_resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_decisions_audit_and_stats_endpoints(test_setup: dict[str, Any]) -> None:
+    app = test_setup["app"]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Audit history endpoint
+        audit_resp = await client.get("/decisions/audit")
+        assert audit_resp.status_code == 200
+        assert "events" in audit_resp.json()
+
+        # Audit stats endpoint
+        stats_resp = await client.get("/decisions/stats")
+        assert stats_resp.status_code == 200
+        stats = stats_resp.json()["stats"]
+        assert "total_recommendations" in stats
+        assert "rejection_rate" in stats
+
+
+@pytest.mark.asyncio
+async def test_degraded_cached_on_malformed_snapshot_rejection(
+    test_setup: dict[str, Any],
+) -> None:
+    app = test_setup["app"]
+    store = test_setup["store"]
+
+    # Ingest a valid snapshot first
+    valid_snap = _make_dummy_snapshot()
+    store.update(valid_snap)
+
+    # Trigger malformed snapshot rejection
+    store.record_malformed_rejection(
+        errors=["Negative fuel volume in STA-99"],
+        tick=99,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Check /health
+        health_resp = await client.get("/health")
+        assert health_resp.status_code == 200
+        health_data = health_resp.json()
+        assert health_data["mode"] == "DEGRADED_CACHED"
+        assert len(health_data["alerts"]) >= 1
+        assert "Negative fuel volume" in health_data["alerts"][0]
+
+        # Check /state
+        state_resp = await client.get("/state")
+        assert state_resp.status_code == 200
+        state_data = state_resp.json()
+        assert state_data["mode"] == "DEGRADED_CACHED"
+        assert len(state_data["alerts"]) >= 1
+        # Snapshot returned is the last known good snapshot
+        assert state_data["snapshot"] is not None
+        assert state_data["snapshot"]["tick"] == valid_snap.tick
+
+
+@pytest.mark.asyncio
+async def test_degraded_fallback_generates_fallback_recommendations_with_human_review(
+    test_setup: dict[str, Any],
+) -> None:
+    app = test_setup["app"]
+    store = test_setup["store"]
+    resilience_mgr = app.state.resilience_manager
+
+    # Build network where station tank is at 10% (< 20%)
+    depot = Depot(
+        id="depot-emergency",
+        name="Emergency Depot",
+        region_id="reg-1",
+        status=DepotStatus.OPEN,
+        capacity=FuelMap(DIESEL=50000, PETROL=30000, OCTANE=20000),
+        inventory=FuelMap(DIESEL=30000, PETROL=20000, OCTANE=15000),
+        dispatch_capacity_per_tick=20000.0,
+    )
+    station = Station(
+        id="station-emergency",
+        name="Critical Highway Station",
+        region_id="reg-1",
+        status=StationStatus.OPEN,
+        demand_profile="highway",
+        demand_multiplier=1.0,
+        capacity=FuelMap(DIESEL=20000, PETROL=10000, OCTANE=8000),
+        inventory=FuelMap(DIESEL=1500, PETROL=5000, OCTANE=4000),  # 7.5% fill -> CRITICAL
+    )
+    route = Route(
+        id="route-emergency",
+        source_depot_id="depot-emergency",
+        destination_station_id="station-emergency",
+        transit_ticks=2,
+        max_shipment=10000.0,
+        status=RouteStatus.AVAILABLE,
+    )
+
+    snapshot = _make_dummy_snapshot()
+    snapshot.depots = [depot]
+    snapshot.stations = [station]
+    snapshot.routes = [route]
+    store.update(snapshot)
+
+    # Set forecaster failure in resilience manager
+    resilience_mgr.record_forecaster_failure("Test simulated intelligence model crash")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Check /health reports DEGRADED_FALLBACK
+        health_resp = await client.get("/health")
+        assert health_resp.status_code == 200
+        assert health_resp.json()["mode"] == "DEGRADED_FALLBACK"
+
+        # Generate recommendations under fallback mode
+        gen_resp = await client.post("/recommendations/generate")
+        assert gen_resp.status_code == 200
+        data = gen_resp.json()
+        assert data["mode"] == "DEGRADED_FALLBACK"
+        assert data["total_count"] >= 1
+
+        rec = data["recommendations"][0]
+        assert rec["needs_human_review"] is True
+        assert rec["confidence_score"] == 0.25
+        assert rec["confidence_level"] == "LOW"
+        assert "FALLBACK HEURISTIC" in rec["explanation"]

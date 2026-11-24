@@ -122,7 +122,17 @@ class SimulatorPoller:
             )
 
             # Ingest into state store and signal circuit success
-            self.store.update(snapshot)
+            accepted = self.store.update(snapshot)
+            if not accepted:
+                logger.warning(
+                    "Snapshot at tick %d was rejected by StateStore due to data validation errors. "
+                    "Preserving last-known-good state.",
+                    snapshot.tick,
+                )
+                self.breaker.record_failure()
+                self.store.record_poll_failure()
+                return None
+
             self.breaker.record_success()
             return snapshot
 
@@ -132,6 +142,16 @@ class SimulatorPoller:
                 type(exc).__name__,
                 exc,
             )
+            from pydantic import ValidationError
+
+            if isinstance(exc, ValidationError):
+                val_errors = [
+                    f"{'.'.join(str(loc) for loc in err.get('loc', []))}: "
+                    f"{err.get('msg', 'invalid field')}"
+                    for err in exc.errors()
+                ]
+                self.store.record_malformed_rejection(errors=val_errors)
+
             self.breaker.record_failure()
             self.store.record_poll_failure()
             return None

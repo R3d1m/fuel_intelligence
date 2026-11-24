@@ -5,7 +5,11 @@ from datetime import UTC, datetime, timedelta
 from app.domain.models import InstanceInfo, OperationalMode, SimulatorSnapshot
 from app.ingest.store import StateStore
 from app.resilience.breaker import CircuitBreaker, CircuitState
-from app.resilience.mode import compute_operational_mode, diagnose_operational_mode
+from app.resilience.mode import (
+    ResilienceManager,
+    compute_operational_mode,
+    diagnose_operational_mode,
+)
 
 
 def _make_dummy_snapshot(is_stale: bool = False, age_seconds: float = 0.0) -> SimulatorSnapshot:
@@ -112,4 +116,58 @@ def test_mode_degraded_fallback_when_forecaster_fails() -> None:
     diagnosis = diagnose_operational_mode(breaker=breaker, store=store, forecaster_failed=True)
     assert diagnosis.mode == OperationalMode.DEGRADED_FALLBACK
     assert diagnosis.forecaster_failed
-    assert "forecaster or twin failure" in diagnosis.reason
+    assert "forecaster" in diagnosis.reason.lower()
+
+
+def test_mode_degraded_fallback_when_twin_fails() -> None:
+    breaker = CircuitBreaker(failure_threshold=3)
+    store = StateStore()
+    store.update(_make_dummy_snapshot(is_stale=False))
+
+    diagnosis = diagnose_operational_mode(breaker=breaker, store=store, twin_failed=True)
+    assert diagnosis.mode == OperationalMode.DEGRADED_FALLBACK
+    assert diagnosis.twin_failed
+    assert "digital twin" in diagnosis.reason.lower()
+
+
+def test_resilience_manager_tracks_failures_and_diagnoses_mode() -> None:
+    breaker = CircuitBreaker(failure_threshold=3)
+    store = StateStore()
+    store.update(_make_dummy_snapshot(is_stale=False))
+    manager = ResilienceManager()
+
+    # Initial state is normal
+    assert manager.get_mode(breaker=breaker, store=store) == OperationalMode.NORMAL
+
+    # Record twin failure
+    manager.record_twin_failure("Monte Carlo memory exhaustion")
+    assert manager.is_model_failed is True
+    assert manager.get_mode(breaker=breaker, store=store) == OperationalMode.DEGRADED_FALLBACK
+
+    diag = manager.diagnose(breaker=breaker, store=store)
+    assert diag.mode == OperationalMode.DEGRADED_FALLBACK
+    assert diag.twin_failed is True
+
+    # Record recovery
+    manager.record_model_success()
+    assert manager.is_model_failed is False
+    assert manager.get_mode(breaker=breaker, store=store) == OperationalMode.NORMAL
+
+
+def test_mode_degraded_cached_when_malformed_snapshot_rejected() -> None:
+    breaker = CircuitBreaker(failure_threshold=3)
+    store = StateStore()
+    valid_snap = _make_dummy_snapshot(is_stale=False)
+    store.update(valid_snap)
+
+    # Record malformed rejection
+    store.record_malformed_rejection(
+        errors=["Negative fuel volume in STA-01"],
+        tick=15,
+    )
+
+    diagnosis = diagnose_operational_mode(breaker=breaker, store=store)
+    assert diagnosis.mode == OperationalMode.DEGRADED_CACHED
+    assert diagnosis.malformed_rejected is True
+    assert "malformed data" in diagnosis.reason.lower()
+    assert len(diagnosis.active_alerts) == 1

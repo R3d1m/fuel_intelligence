@@ -4,7 +4,7 @@ Defines Pydantic v2 data models for all resources interacting with the
 BUP Fuel Supply Simulator and downstream platform modules.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -116,6 +116,11 @@ class FuelMap(BaseModel):
         """Allow dict-like indexing: fuel_map['DIESEL']."""
         return self.get(item)
 
+    def __setitem__(self, item: str | FuelType, value: float) -> None:
+        """Allow dict-like assignment: fuel_map['DIESEL'] = 100.0."""
+        key = item.value if isinstance(item, FuelType) else str(item).upper()
+        setattr(self, key, value)
+
     def total(self) -> float:
         """Return total liters across all fuels."""
         return self.DIESEL + self.PETROL + self.OCTANE
@@ -127,6 +132,18 @@ class FuelMap(BaseModel):
             FuelType.PETROL: self.PETROL,
             FuelType.OCTANE: self.OCTANE,
         }
+
+    def items(self) -> list[tuple[FuelType, float]]:
+        """Return fuel type to quantity key-value pairs."""
+        return list(self.as_dict().items())
+
+    def keys(self) -> list[FuelType]:
+        """Return list of fuel types."""
+        return list(self.as_dict().keys())
+
+    def values(self) -> list[float]:
+        """Return list of fuel quantities."""
+        return list(self.as_dict().values())
 
 
 class InstanceInfo(BaseModel):
@@ -335,3 +352,22 @@ class SimulatorSnapshot(BaseModel):
     sim_time: str
     fetched_at: datetime
     is_stale: bool = False
+
+    @property
+    def current_tick(self) -> int:
+        """Convenience alias for simulation clock tick."""
+        return self.tick
+
+
+class DataIntegrityAlert(BaseModel):
+    """Alert raised when incoming simulator snapshot data fails validation or has missing fields."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    alert_id: str
+    tick: int | None = None
+    severity: RiskSeverity = RiskSeverity.CRITICAL
+    headline: str
+    errors: list[str] = Field(default_factory=list)
+    action_taken: str = "Rejected snapshot; preserved last-known-good state"
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))

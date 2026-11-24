@@ -54,6 +54,9 @@ class HealthResponse(BaseModel):
     simulator: SimulatorDependencyHealth = Field(..., description="Simulator dependency status.")
     store: StoreDependencyHealth = Field(..., description="In-memory state store status.")
     poller: PollerDependencyHealth = Field(..., description="Background poller status.")
+    alerts: list[str] = Field(
+        default_factory=list, description="Active resilience and data integrity alerts."
+    )
     timestamp: datetime = Field(..., description="UTC evaluation timestamp.")
 
 
@@ -72,6 +75,9 @@ class StateResponse(BaseModel):
     circuit_state: str = Field(..., description="Current circuit breaker state.")
     snapshot: SimulatorSnapshot | None = Field(
         None, description="Latest or effective simulator snapshot."
+    )
+    alerts: list[str] = Field(
+        default_factory=list, description="Active resilience and data integrity alerts."
     )
     evaluated_at: datetime = Field(..., description="UTC timestamp of state resolution.")
 
@@ -232,4 +238,62 @@ class TwinSimulationResponse(BaseModel):
     )
     reason: str = Field(..., description="Diagnostic justification for current operational mode.")
     simulation: dict[str, Any] = Field(..., description="Detailed comparative simulation metrics.")
+    evaluated_at: datetime = Field(..., description="UTC evaluation timestamp.")
+
+
+class RecommendationApproveRequest(BaseModel):
+    """Optional payload when an operator approves a recommendation."""
+
+    operator_notes: str | None = Field(
+        default=None, description="Optional justification or operator note for audit trail."
+    )
+
+
+class RecommendationRejectRequest(BaseModel):
+    """Payload when an operator rejects a recommendation."""
+
+    operator_notes: str | None = Field(
+        default=None,
+        description="Mandatory or optional rationale explaining why recommendation was rejected.",
+    )
+
+
+class RecommendationResponse(BaseModel):
+    """Single recommendation response with full context, impact, and state."""
+
+    recommendation: dict[str, Any] = Field(
+        ..., description="Recommendation domain object dictionary."
+    )
+    evaluated_at: datetime = Field(..., description="UTC evaluation timestamp.")
+
+
+class RecommendationListResponse(BaseModel):
+    """List of active or historical recommendations."""
+
+    mode: OperationalMode = Field(
+        ...,
+        description="Authoritative operational mode: NORMAL, DEGRADED_CACHED, DEGRADED_FALLBACK.",
+    )
+    reason: str = Field(..., description="Diagnostic justification for current operational mode.")
+    total_count: int = Field(..., description="Total count of recommendations returned.")
+    recommendations: list[dict[str, Any]] = Field(
+        default_factory=list, description="Array of recommendation items."
+    )
+    evaluated_at: datetime = Field(..., description="UTC evaluation timestamp.")
+
+
+class AuditHistoryResponse(BaseModel):
+    """Audit log history entries recording decisions and state machine transitions."""
+
+    total_events: int = Field(..., description="Total count of audit log entries returned.")
+    events: list[dict[str, Any]] = Field(default_factory=list, description="Audit log records.")
+    evaluated_at: datetime = Field(..., description="UTC evaluation timestamp.")
+
+
+class AuditStatsResponse(BaseModel):
+    """Consolidated decision and compliance metrics from the SQLite audit ledger."""
+
+    stats: dict[str, Any] = Field(
+        ..., description="Summary statistics: counts, liters, rejection rate."
+    )
     evaluated_at: datetime = Field(..., description="UTC evaluation timestamp.")

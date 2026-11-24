@@ -1,6 +1,7 @@
 """API route handlers for platform health and state endpoints."""
 
 import logging
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -8,19 +9,27 @@ from app.adapters.simulator_client import SimulatorClient
 from app.api.deps import (
     get_app_settings,
     get_circuit_breaker,
+    get_decision_service,
     get_digital_twin,
     get_forecaster,
     get_planner,
     get_poller,
+    get_resilience_manager,
     get_risk_engine,
     get_simulator_client,
     get_state_store,
 )
 from app.api.schemas import (
+    AuditHistoryResponse,
+    AuditStatsResponse,
     ForecastResponse,
     HealthResponse,
     PlanResponse,
     PollerDependencyHealth,
+    RecommendationApproveRequest,
+    RecommendationListResponse,
+    RecommendationRejectRequest,
+    RecommendationResponse,
     RiskResponse,
     SimulatorDependencyHealth,
     StateResponse,
@@ -32,6 +41,7 @@ from app.api.schemas import (
     TwinSimulationResponse,
 )
 from app.config import Settings
+from app.decisions.service import DecisionService
 from app.domain.models import DemandHistoryRecord, FuelType, OperationalMode, RiskSeverity
 from app.ingest.poller import SimulatorPoller
 from app.ingest.store import StateStore
@@ -40,7 +50,7 @@ from app.intelligence.planner import ConstrainedPlanner
 from app.intelligence.risk import RiskAlert, RiskEngine, calculate_urgency_score
 from app.intelligence.twin import DigitalTwin
 from app.resilience.breaker import CircuitBreaker, CircuitState
-from app.resilience.mode import diagnose_operational_mode
+from app.resilience.mode import ResilienceManager, diagnose_operational_mode
 
 logger = logging.getLogger(__name__)
 
@@ -58,12 +68,13 @@ async def get_health(
     store: StateStore = Depends(get_state_store),
     breaker: CircuitBreaker = Depends(get_circuit_breaker),
     poller: SimulatorPoller = Depends(get_poller),
+    manager: ResilienceManager = Depends(get_resilience_manager),
 ) -> HealthResponse:
     """Evaluate and report system liveness, dependency states, and operational mode."""
     diagnosis = diagnose_operational_mode(
         breaker=breaker,
         store=store,
-        forecaster_failed=False,
+        manager=manager,
         stale_threshold_seconds=settings.stale_threshold_seconds,
     )
 
@@ -95,6 +106,7 @@ async def get_health(
             is_running=poller.is_running,
             poll_interval_seconds=poller.poll_interval_seconds,
         ),
+        alerts=diagnosis.active_alerts,
         timestamp=diagnosis.evaluated_at,
     )
 
@@ -109,6 +121,7 @@ async def get_state(
     settings: Settings = Depends(get_app_settings),
     store: StateStore = Depends(get_state_store),
     breaker: CircuitBreaker = Depends(get_circuit_breaker),
+    manager: ResilienceManager = Depends(get_resilience_manager),
 ) -> StateResponse:
     """Retrieve the authoritative simulation state.
 
@@ -118,7 +131,7 @@ async def get_state(
     diagnosis = diagnose_operational_mode(
         breaker=breaker,
         store=store,
-        forecaster_failed=False,
+        manager=manager,
         stale_threshold_seconds=settings.stale_threshold_seconds,
     )
 
@@ -145,6 +158,7 @@ async def get_state(
         is_stale=diagnosis.is_stale,
         circuit_state=breaker.state.value,
         snapshot=snapshot,
+        alerts=diagnosis.active_alerts,
         evaluated_at=diagnosis.evaluated_at,
     )
 
@@ -206,6 +220,7 @@ async def get_fleet_forecasts(
     client: SimulatorClient = Depends(get_simulator_client),
     breaker: CircuitBreaker = Depends(get_circuit_breaker),
     forecaster: DemandForecaster = Depends(get_forecaster),
+    manager: ResilienceManager = Depends(get_resilience_manager),
 ) -> ForecastResponse:
     """Compute and retrieve fleet-wide demand forecasts and prediction error metrics."""
     # Obtain snapshot (latest or cached fallback)
@@ -236,6 +251,7 @@ async def get_fleet_forecasts(
     except Exception as exc:
         logger.error("Forecaster encountered unexpected error: %s", exc)
         forecaster_failed = True
+        manager.record_forecaster_failure(str(exc))
         # Create minimal fallback structure
         fleet_fc = forecaster.forecast_all(
             snapshot=snapshot,
@@ -247,6 +263,7 @@ async def get_fleet_forecasts(
         breaker=breaker,
         store=store,
         forecaster_failed=forecaster_failed,
+        manager=manager,
         stale_threshold_seconds=settings.stale_threshold_seconds,
     )
 
@@ -358,6 +375,7 @@ async def get_risks(
     breaker: CircuitBreaker = Depends(get_circuit_breaker),
     forecaster: DemandForecaster = Depends(get_forecaster),
     risk_engine: RiskEngine = Depends(get_risk_engine),
+    manager: ResilienceManager = Depends(get_resilience_manager),
 ) -> RiskResponse:
     """Evaluate and return fleet-wide fuel risk projections and operational alerts."""
     snapshot = store.get_effective_snapshot()
@@ -396,6 +414,7 @@ async def get_risks(
     except Exception as exc:
         logger.error("Risk engine encountered unexpected error: %s", exc)
         engine_failed = True
+        manager.record_forecaster_failure(str(exc))
         # Minimal fallback
         fleet_risk = risk_engine.assess_fleet_risk(
             snapshot=snapshot,
@@ -410,6 +429,7 @@ async def get_risks(
         breaker=breaker,
         store=store,
         forecaster_failed=engine_failed,
+        manager=manager,
         stale_threshold_seconds=settings.stale_threshold_seconds,
     )
 
@@ -594,6 +614,7 @@ async def get_dispatch_plan(
     forecaster: DemandForecaster = Depends(get_forecaster),
     risk_engine: RiskEngine = Depends(get_risk_engine),
     planner: ConstrainedPlanner = Depends(get_planner),
+    manager: ResilienceManager = Depends(get_resilience_manager),
 ) -> PlanResponse:
     """Evaluate network risk and generate an optimized constrained dispatch plan."""
     snapshot = store.get_effective_snapshot()
@@ -634,26 +655,23 @@ async def get_dispatch_plan(
             fleet_risk=fleet_risk,
         )
     except Exception as exc:
-        logger.error("Planner encountered unexpected error: %s", exc)
+        logger.error("Planning pipeline encountered unexpected error: %s", exc)
         planner_failed = True
-        # Fallback plan with empty or default risk assessment
-        fallback_risk = risk_engine.assess_fleet_risk(
-            snapshot=snapshot,
-            fleet_forecast=None,
-            demand_history=[],
-            data_age_seconds=data_age,
-            is_stale=is_stale,
-            horizon_ticks=settings.risk_horizon_ticks,
+        manager.record_forecaster_failure(str(exc))
+        from app.intelligence.fallback import FallbackPlanner
+
+        fallback_p = getattr(planner, "fallback_planner", None) or FallbackPlanner(
+            settings=settings
         )
-        plan = planner.generate_plan(
-            snapshot=snapshot,
-            fleet_risk=fallback_risk,
+        plan = fallback_p.generate_plan(
+            snapshot=snapshot, fallback_reason=f"Pipeline exception: {exc}"
         )
 
     diagnosis = diagnose_operational_mode(
         breaker=breaker,
         store=store,
         forecaster_failed=planner_failed,
+        manager=manager,
         stale_threshold_seconds=settings.stale_threshold_seconds,
     )
 
@@ -779,4 +797,216 @@ async def get_station_fuel_twin(
         store=store,
         breaker=breaker,
         twin=twin,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Recommendations, Approvals & SQLite Audit Ledger Endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/recommendations",
+    response_model=RecommendationListResponse,
+    summary="List Recommendations",
+    description="Queries actionable recommendations filtered by status or destination station.",
+)
+async def list_recommendations(
+    status: str | None = None,
+    station_id: str | None = None,
+    limit: int = 100,
+    settings: Settings = Depends(get_app_settings),
+    store: StateStore = Depends(get_state_store),
+    breaker: CircuitBreaker = Depends(get_circuit_breaker),
+    decision_service: DecisionService = Depends(get_decision_service),
+    manager: ResilienceManager = Depends(get_resilience_manager),
+) -> RecommendationListResponse:
+    """Retrieve recommendations sorted by urgency score."""
+    diagnosis = diagnose_operational_mode(
+        breaker=breaker,
+        store=store,
+        manager=manager,
+        stale_threshold_seconds=settings.stale_threshold_seconds,
+    )
+    mode = diagnosis.mode
+    reason = diagnosis.reason
+
+    recs = decision_service.list_recommendations(status=status, station_id=station_id, limit=limit)
+    return RecommendationListResponse(
+        mode=mode,
+        reason=reason,
+        total_count=len(recs),
+        recommendations=[r.model_dump(mode="json") for r in recs],
+        evaluated_at=datetime.now(UTC),
+    )
+
+
+@router.post(
+    "/recommendations/generate",
+    response_model=RecommendationListResponse,
+    summary="Generate Recommendations from Current State",
+    description="Runs constrained planner on latest snapshot and records new proposals.",
+)
+async def generate_recommendations(
+    settings: Settings = Depends(get_app_settings),
+    store: StateStore = Depends(get_state_store),
+    breaker: CircuitBreaker = Depends(get_circuit_breaker),
+    decision_service: DecisionService = Depends(get_decision_service),
+    manager: ResilienceManager = Depends(get_resilience_manager),
+) -> RecommendationListResponse:
+    """Evaluate current network risks and formulate actionable recommendations."""
+    diagnosis = diagnose_operational_mode(
+        breaker=breaker,
+        store=store,
+        manager=manager,
+        stale_threshold_seconds=settings.stale_threshold_seconds,
+    )
+    mode = diagnosis.mode
+    reason = diagnosis.reason
+
+    snapshot = store.get_effective_snapshot()
+    if snapshot is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "State repository has no snapshot available. Awaiting first poll cycle.",
+                "mode": mode.value,
+                "reason": reason,
+            },
+        )
+
+    force_fallback = mode == OperationalMode.DEGRADED_FALLBACK
+    recs = decision_service.generate_recommendations_from_snapshot(
+        snapshot, force_fallback=force_fallback
+    )
+    return RecommendationListResponse(
+        mode=mode,
+        reason=reason,
+        total_count=len(recs),
+        recommendations=[r.model_dump(mode="json") for r in recs],
+        evaluated_at=datetime.now(UTC),
+    )
+
+
+@router.get(
+    "/recommendations/{recommendation_id}",
+    response_model=RecommendationResponse,
+    summary="Get Recommendation Details",
+    description="Fetch single recommendation with full constraints, signals, and alternatives.",
+)
+async def get_recommendation_by_id(
+    recommendation_id: str,
+    decision_service: DecisionService = Depends(get_decision_service),
+) -> RecommendationResponse:
+    """Fetch recommendation by ID."""
+    rec = decision_service.get_recommendation(recommendation_id)
+    if rec is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Recommendation '{recommendation_id}' not found.",
+        )
+
+    return RecommendationResponse(
+        recommendation=rec.model_dump(mode="json"),
+        evaluated_at=datetime.now(UTC),
+    )
+
+
+@router.post(
+    "/recommendations/{recommendation_id}/approve",
+    response_model=RecommendationResponse,
+    summary="Approve and Dispatch Recommendation",
+    description=(
+        "Approves recommendation, generates deterministic idempotency key, "
+        "and dispatches allocation to simulator. Records outcome in SQLite audit ledger."
+    ),
+)
+async def approve_recommendation(
+    recommendation_id: str,
+    body: RecommendationApproveRequest | None = None,
+    decision_service: DecisionService = Depends(get_decision_service),
+) -> RecommendationResponse:
+    """Approve a recommendation and execute allocation dispatch."""
+    notes = body.operator_notes if body else None
+    try:
+        rec = await decision_service.approve_recommendation(
+            recommendation_id=recommendation_id,
+            operator_notes=notes,
+        )
+    except ValueError as err:
+        err_msg = str(err)
+        if "not found" in err_msg.lower():
+            raise HTTPException(status_code=404, detail=err_msg) from err
+        raise HTTPException(status_code=400, detail=err_msg) from err
+
+    return RecommendationResponse(
+        recommendation=rec.model_dump(mode="json"),
+        evaluated_at=datetime.now(UTC),
+    )
+
+
+@router.post(
+    "/recommendations/{recommendation_id}/reject",
+    response_model=RecommendationResponse,
+    summary="Reject Recommendation",
+    description="Rejects a proposed recommendation and logs operator rationale in audit ledger.",
+)
+async def reject_recommendation(
+    recommendation_id: str,
+    body: RecommendationRejectRequest | None = None,
+    decision_service: DecisionService = Depends(get_decision_service),
+) -> RecommendationResponse:
+    """Reject a proposed recommendation."""
+    notes = body.operator_notes if body else None
+    try:
+        rec = decision_service.reject_recommendation(
+            recommendation_id=recommendation_id,
+            operator_notes=notes,
+        )
+    except ValueError as err:
+        err_msg = str(err)
+        if "not found" in err_msg.lower():
+            raise HTTPException(status_code=404, detail=err_msg) from err
+        raise HTTPException(status_code=400, detail=err_msg) from err
+
+    return RecommendationResponse(
+        recommendation=rec.model_dump(mode="json"),
+        evaluated_at=datetime.now(UTC),
+    )
+
+
+@router.get(
+    "/decisions/audit",
+    response_model=AuditHistoryResponse,
+    summary="Get Audit Log History",
+    description="Queries historical decision events and state transitions from SQLite ledger.",
+)
+async def get_audit_history(
+    recommendation_id: str | None = None,
+    limit: int = 100,
+    decision_service: DecisionService = Depends(get_decision_service),
+) -> AuditHistoryResponse:
+    """Retrieve decision event audit trail."""
+    events = decision_service.get_audit_history(recommendation_id=recommendation_id, limit=limit)
+    return AuditHistoryResponse(
+        total_events=len(events),
+        events=events,
+        evaluated_at=datetime.now(UTC),
+    )
+
+
+@router.get(
+    "/decisions/stats",
+    response_model=AuditStatsResponse,
+    summary="Get Audit Ledger Statistics",
+    description="Returns aggregate compliance statistics, status breakdown, and rejection rates.",
+)
+async def get_audit_stats(
+    decision_service: DecisionService = Depends(get_decision_service),
+) -> AuditStatsResponse:
+    """Retrieve consolidated audit statistics."""
+    stats = decision_service.get_audit_statistics()
+    return AuditStatsResponse(
+        stats=stats,
+        evaluated_at=datetime.now(UTC),
     )

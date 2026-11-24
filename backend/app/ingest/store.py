@@ -8,9 +8,11 @@ Stores:
 """
 
 import logging
+import uuid
 from datetime import UTC, datetime
 
-from app.domain.models import SimulatorSnapshot
+from app.domain.models import DataIntegrityAlert, SimulatorSnapshot
+from app.domain.validation import validate_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,9 @@ class StateStore:
         self._last_updated_at: datetime | None = None
         self._total_updates: int = 0
         self._failed_polls: int = 0
+        self._rejected_snapshots_count: int = 0
+        self._malformed_alert: DataIntegrityAlert | None = None
+        self._latest_snapshot_rejected: bool = False
 
     @property
     def total_updates(self) -> int:
@@ -36,20 +41,82 @@ class StateStore:
         return self._failed_polls
 
     @property
+    def rejected_snapshots_count(self) -> int:
+        """Total malformed or corrupt snapshots rejected."""
+        return self._rejected_snapshots_count
+
+    @property
+    def has_malformed_alert(self) -> bool:
+        """Check if an active malformed snapshot rejection alert is pending."""
+        return self._malformed_alert is not None
+
+    @property
+    def malformed_alert(self) -> DataIntegrityAlert | None:
+        """Retrieve the active data integrity alert, if any."""
+        return self._malformed_alert
+
+    @property
+    def latest_snapshot_rejected(self) -> bool:
+        """Check if the most recent snapshot ingestion attempt was rejected."""
+        return self._latest_snapshot_rejected
+
+    @property
     def last_updated_at(self) -> datetime | None:
         """UTC timestamp of the most recent snapshot ingestion."""
         return self._last_updated_at
 
-    def update(self, snapshot: SimulatorSnapshot) -> None:
-        """Ingest a new snapshot into the store.
+    def record_malformed_rejection(
+        self,
+        errors: list[str],
+        tick: int | None = None,
+    ) -> DataIntegrityAlert:
+        """Record rejection of a malformed or corrupt snapshot and raise an integrity alert."""
+        self._rejected_snapshots_count += 1
+        self._latest_snapshot_rejected = True
+        alert = DataIntegrityAlert(
+            alert_id=f"malformed_t{tick or 0}_{uuid.uuid4().hex[:6]}",
+            tick=tick,
+            headline="Malformed simulator snapshot rejected",
+            errors=errors,
+            action_taken="Rejected corrupt snapshot; preserved last-known-good state",
+            timestamp=datetime.now(UTC),
+        )
+        self._malformed_alert = alert
+        logger.error(
+            "Snapshot validation failed (tick=%s): %s. Preserved last-known-good state.",
+            tick,
+            "; ".join(errors),
+        )
+        return alert
 
-        Updates the latest snapshot. If the snapshot is fresh (not stale),
-        it also updates the last-known-good snapshot.
+    def clear_malformed_alert(self) -> None:
+        """Clear active malformed snapshot alerts."""
+        self._malformed_alert = None
+        self._latest_snapshot_rejected = False
+
+    def update(self, snapshot: SimulatorSnapshot) -> bool:
+        """Ingest a new snapshot into the store with domain integrity validation.
+
+        If snapshot is valid:
+            Updates latest snapshot and (if non-stale) last-known-good snapshot.
+            Clears any pending malformed alert.
+            Returns True.
+        If snapshot violates validation checks:
+            Rejects snapshot, preserves existing last-good snapshot, raises alert.
+            Returns False.
         """
+        # Validate domain invariants
+        validation_errors = validate_snapshot(snapshot)
+        if validation_errors:
+            self.record_malformed_rejection(errors=validation_errors, tick=snapshot.tick)
+            return False
+
         now = datetime.now(UTC)
         self._latest_snapshot = snapshot
         self._last_updated_at = now
         self._total_updates += 1
+        self._malformed_alert = None
+        self._latest_snapshot_rejected = False
 
         if not snapshot.is_stale:
             self._last_good_snapshot = snapshot
@@ -63,9 +130,12 @@ class StateStore:
             snapshot.is_stale,
             self._total_updates,
         )
+        return True
 
     def get_latest(self) -> SimulatorSnapshot | None:
-        """Retrieve the most recently ingested snapshot."""
+        """Retrieve most recently ingested valid snapshot (or last-good if rejected)."""
+        if self._latest_snapshot_rejected:
+            return self._last_good_snapshot
         return self._latest_snapshot
 
     def get_last_good(self) -> SimulatorSnapshot | None:
@@ -73,7 +143,9 @@ class StateStore:
         return self._last_good_snapshot
 
     def get_effective_snapshot(self) -> SimulatorSnapshot | None:
-        """Retrieve the best available snapshot (latest, falling back to last-good)."""
+        """Retrieve the best available snapshot (latest valid, falling back to last-good)."""
+        if self._latest_snapshot_rejected:
+            return self._last_good_snapshot
         return self._latest_snapshot or self._last_good_snapshot
 
     def is_stale(self, stale_threshold_seconds: float = 10.0) -> bool:
@@ -123,4 +195,7 @@ class StateStore:
         self._last_updated_at = None
         self._total_updates = 0
         self._failed_polls = 0
+        self._rejected_snapshots_count = 0
+        self._malformed_alert = None
+        self._latest_snapshot_rejected = False
         logger.info("StateStore cleared.")

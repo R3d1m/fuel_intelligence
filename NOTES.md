@@ -206,8 +206,105 @@ Personal engineering log documenting architecture insights, simulator quirks, de
   - Created test suite `backend/tests/test_twin.py` (13 tests) verifying fixed seed reproducibility, stochastic variation across seeds, significant stockout risk reduction, confidence interval ordering ($L \le M \le U$), trajectory percentiles ($P_{10} \le P_{50} \le P_{90}$), tank ullage capping, residual variance sensitivity, protocol conformance, planner integration, and API endpoints.
   - Full automated platform test suite expanded to **139 passed tests (139/139 green)** with zero Ruff lint or format warnings.
 
+### Block 3: Recommendations, Approval Workflow & SQLite Audit Ledger
+- **Actionable Recommendation Objects (`Recommendation`):**
+  - Built comprehensive `Recommendation` domain model in `backend/app/decisions/models.py` translating raw planner actions into operator-ready dispatch directives.
+  - Encapsulates:
+    - *What:* Destination station, fuel type, allocated liters, source depot, route corridor, departure tick, arrival tick, and transit duration.
+    - *Why & Signals:* Urgency score, severity classification (`CRITICAL`, `WATCH`), mitigation tier (`FULL_PREVENTION`, `PARTIAL_MITIGATION`, `RESTOCK`), unavoidable shortage hours, explanatory narrative, and contextual signals (station fill percentage, burn rate, demand multiplier).
+    - *Operational Constraints Evaluated:* All 5 evaluated bounds (route max tanker capacity, depot available stock above reserve, depot remaining dispatch capacity, station effective free tank ullage, and deficit needed) and the binding bottleneck constraint.
+    - *Expected Monte Carlo Benefit:* Stockout probability before vs after (e.g. $100.0\% \to 51.3\%$), probability reduction $\Delta P$, hours of cover added ($+2.8\text{h}$), and prevented unmet customer demand ($5,851\text{ L}$).
+    - *Operator Traceability:* Confidence tier, human review mandate flag (`needs_human_review`), and up to 2 runner-up alternative corridors/depots with explicit rationales for why they were not chosen.
+- **Formal State Machine & Lifecycle Transitions:**
+  - Designed strict 5-state lifecycle in `RecommendationStatus`:
+    $$\text{PROPOSED} \xrightarrow{\text{approve}} \text{APPROVED} \xrightarrow{\text{dispatch}} \text{SUBMITTED} \quad (\text{or } \text{FAILED})$$
+    $$\text{PROPOSED} \xrightarrow{\text{reject}} \text{REJECTED}$$
+  - Guarded state transitions: prevents re-approving or rejecting already submitted allocations, rejects illegal state mutations with clear exceptions, and supports retrying previously `FAILED` submissions once upstream recovers.
+- **Deterministic Idempotency Key Generation:**
+  - Implemented `generate_idempotency_key(station_id, fuel_type, tick, quantity)` utilizing canonical string representations and SHA-256 digests (`alloc_{station}_{fuel}_t{tick}_q{quantity}_{hash}`).
+  - Guarantees byte-identical tokens across retries or replays, preventing double-dispatching in upstream simulator.
+- **Simulator Rejection Code Mapping & Human Guidance:**
+  - Built `map_simulator_error_code()` translating simulator error codes (`ROUTE_DISRUPTED`, `DEPOT_CLOSED`, `DEPOT_INSUFFICIENT_STOCK`, `DEPOT_DISPATCH_EXCEEDED`, `STATION_CLOSED`, `CAPACITY_EXCEEDED`, `ULLAGE_EXCEEDED`, `IDEMPOTENCY_CONFLICT`, `CIRCUIT_OPEN`) into clear, actionable operator guidance and recovery tips.
+- **Durable SQLite Audit Ledger (`AuditLedger`):**
+  - Implemented `AuditLedger` in `backend/app/decisions/audit.py` using Python's standard `sqlite3` with WAL mode and in-memory test connection pooling.
+  - Schema architecture:
+    - `recommendations`: Upserts all parameters, full JSON serialized signals, evaluated constraints, alternatives, impact metrics, and state timestamps.
+    - `decision_audit_log`: Append-only immutable event trail recording every state change (`PROPOSAL_CREATED`, `DECISION_APPROVED`, `DECISION_REJECTED`, `ALLOCATION_SUBMITTED`, `ALLOCATION_FAILED`), operator notes, and transition payloads.
+    - Optimized indexes on `station_id`, `status`, `created_tick`, `idempotency_key`, and `timestamp`.
+  - Exposes audit statistics (total decisions formulated, approved liters, submitted allocations, rejection rate %, and failure counts).
+- **Decision Service Orchestration (`DecisionService`):**
+  - Implemented `DecisionService` in `backend/app/decisions/service.py` coordinating planner execution, recommendation generation, duplicate suppression via idempotency checks, operator approvals/rejections, and simulator `POST /v1/allocations` execution.
+- **REST Endpoints & Dependency Injection:**
+  - Added REST endpoints in `backend/app/api/routes.py`:
+    - `GET /recommendations` (filters: `status`, `station_id`, `limit`)
+    - `POST /recommendations/generate` (formulates recommendations from current state snapshot)
+    - `GET /recommendations/{id}` (single recommendation details with constraints and alternatives)
+    - `POST /recommendations/{id}/approve` (approves, dispatches to simulator, logs audit event)
+    - `POST /recommendations/{id}/reject` (rejects with operator rationale, logs audit event)
+    - `GET /decisions/audit` (immutable audit log event history)
+    - `GET /decisions/stats` (aggregate compliance statistics and rejection rate)
+  - Wired singletons into `create_app()` factory in `main.py` and `deps.py`.
+- **Streamlit Dashboard Integration:**
+  - Added `BackendApiClient` client methods: `get_recommendations`, `generate_recommendations`, `approve_recommendation`, `reject_recommendation`, `get_audit_history`, `get_audit_stats`.
+  - Added "🎯 Formulate Dispatch Recommendations" trigger in dashboard sidebar.
+  - Built **Actionable Recommendations & Approval Deck**:
+    - High-visibility cards with stockout risk drop deltas (e.g. $-48.7\%$), cover added, liters prevented, and binding constraint badges.
+    - Expandable constraints audit and evaluated alternatives.
+    - Interactive **Approve & Dispatch** (Green) and **Reject** (Red) operator buttons with justification text input and toast feedback.
+  - Built dedicated **🎯 Recommendations & Approvals** tab and **📜 Decision Audit Ledger** tab displaying KPI metrics, decision history tables, and event audit trails.
+- **Test Coverage & Verification:**
+  - Built test suites:
+    - `backend/tests/test_audit_ledger.py` (5 tests): SQLite upserts, idempotency lookups, urgency filtering, event append logging, and statistics.
+    - `backend/tests/test_decision_service.py` (7 tests): Plan-to-recommendation conversion, duplicate prevention, approval success, simulator domain error mapping, rejection audit, illegal state transition guards, and failed retry recovery.
+    - `backend/tests/test_api_endpoints.py` (expanded with 3 new integration tests): `/recommendations`, `/generate`, `/approve`, `/reject`, `/decisions/audit`, `/decisions/stats`.
+    - `backend/tests/test_dashboard_client.py` and `backend/tests/test_dashboard_app.py`: Resilient thin client tests and headless fragment/deck rendering.
+  - Executed live empirical drill against running Docker simulator: injected a $6\times$ demand spike, advanced ticks, formulated 4 recommendations, approved a $7,000\text{ L}$ shipment to Karnaphuli Highway Station, received simulator allocation ID `#1`, and verified persistent SQLite audit trail.
+  - Automated test suite expanded to **157 passed tests (157/157 green)** with zero Ruff lint or format warnings.
+### Block 4: Degradation Modes & Fallback Policy
+- **Centralized Operational Mode Architecture & `ResilienceManager` (`resilience/mode.py`):**
+  - Consolidated platform operational mode resolution into a single authoritative engine:
+    - `NORMAL`: Fresh snapshot, closed simulator circuit, healthy forecasting and digital twin models.
+    - `DEGRADED_CACHED`: Upstream simulator circuit `OPEN`/failing, stale data (`X-Simulator-Stale: true`), or corrupted snapshot rejected; serving validated last-known-good state from `StateStore`.
+    - `DEGRADED_FALLBACK`: Upstream simulator reachable, but intelligence models (forecaster or digital twin) offline, timing out, or throwing unhandled exceptions; activates rule-based emergency heuristic.
+  - Implemented `ResilienceManager` singleton tracking model failure states (`forecaster_failed`, `twin_failed`, `consecutive_model_failures`), snapshot integrity rejections, and diagnostic reasons.
+  - Built `ModeDiagnosis` domain model with transparent active alert surfacing and diagnostic indicators.
+- **Snapshot Data Integrity & Corrupt Payload Defense (`domain/validation.py`, `ingest/store.py`, `ingest/poller.py`):**
+  - Implemented `validate_snapshot(snapshot: SimulatorSnapshot) -> list[str]` verifying structural and semantic network invariants:
+    1. Instance tick non-negative, tick_minutes positive, datetime valid.
+    2. Station inventories non-negative, total capacity strictly positive, individual capacities non-negative.
+    3. Depot inventories non-negative, total capacity strictly positive, dispatch capacity per tick non-negative.
+    4. Routes transit ticks strictly positive, max shipment strictly positive, valid endpoint references.
+  - Updated `StateStore.update()` to validate all incoming snapshots:
+    - Immediately rejects corrupt or invalid payloads, incrementing `rejected_snapshots_count`.
+    - Records persistent `DataIntegrityAlert` with detailed error traces and timestamps.
+    - Preserves `_last_good_snapshot`, serving it via `get_latest()` and `get_effective_snapshot()` when latest is rejected.
+    - Transitions platform into `DEGRADED_CACHED` mode, automatically clearing alert when a valid snapshot arrives.
+  - Updated background `SimulatorPoller` to catch Pydantic `ValidationError` and record malformed payload details.
+- **Deterministic Plain Rule Fallback Policy (`intelligence/fallback.py`):**
+  - Built `FallbackPlanner` class and `generate_fallback_plan()` helper providing emergency dispatch capabilities when ML or Monte Carlo models fail:
+    - Plain Rule Logic:
+      1. Any station fuel tank with effective fill ratio $< 20\%$ is classified as `CRITICAL`.
+      2. Any station fuel tank with effective fill ratio $< 35\%$ is classified as `WATCH`.
+      3. Sorts at-risk tanks by urgency (lowest fill ratio first).
+      4. For each at-risk tank, considers all `AVAILABLE` corridors from `OPEN`/`CONSTRAINED` depots.
+      5. Computes largest feasible shipment respecting all 5 binding constraints:
+         $$\min(\text{route\_max}, \text{depot\_avail}, \text{depot\_dispatch}, \text{station\_ullage}, \text{deficit})$$
+      6. Low Confidence & Mandatory Review: Assigns low confidence score ($0.25$, `LOW`) and strictly mandates `needs_human_review = True`.
+      7. Evaluates and retains top candidate plus up to 2 runner-up alternatives with explicit bottleneck rationales.
+      8. Enforces shared multi-station capacity bookkeeping across all dispatches.
+- **Fallback Integration in Planner, Decision Service, & API Routes:**
+  - Wrapped risky `assess_fleet_risk` and `twin_evaluator.evaluate` calls in `ConstrainedPlanner` with try/except guards that record model failures and fall back to `FallbackPlanner`.
+  - `DecisionService` generates actionable fallback recommendations, inheriting `needs_human_review = True`, low confidence, and logging `FALLBACK_POLICY_ACTIVATED` audit events in SQLite ledger.
+  - FastAPI endpoints (`/health`, `/state`, `/forecasts`, `/risks`, `/planner/dispatch-plan`, `/recommendations`, `/recommendations/generate`) inject `ResilienceManager`, accept `force_fallback` query params, and return active resilience alerts.
+  - Streamlit dashboard banner alerts operators to active data integrity issues and degraded mode status.
+- **Test Coverage & Verification:**
+  - Created test suite `backend/tests/test_snapshot_validation.py` (9 tests): Instance, station, depot, and route validation rules; rejection of malformed snapshots by `StateStore`; preservation of last-good snapshot; alert clearing.
+  - Created test suite `backend/tests/test_fallback_planner.py` (7 tests): Plain rule thresholds ($<20\%$ critical, $<35\%$ watch); largest feasible allocation; low confidence ($0.25$) and human review mandate; disrupted route handling; shared capacity bookkeeping; planner fallback delegation on risk engine failure; decision service audit persistence.
+  - Expanded `backend/tests/test_operational_mode.py` (9 tests) verifying `twin_failed`, `malformed_rejected`, and `ResilienceManager` state tracking.
+  - Expanded `backend/tests/test_api_endpoints.py` (18 tests) with tests for degraded cached mode on malformed snapshot rejection and degraded fallback recommendation generation.
+  - Full automated platform test suite expanded to **178 passed tests (178/178 green)** with zero Ruff lint or format warnings.
 
-
+---
 
 
 

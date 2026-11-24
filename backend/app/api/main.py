@@ -14,13 +14,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.adapters.simulator_client import SimulatorClient
 from app.api.routes import router as api_router
 from app.config import Settings, get_settings
+from app.decisions.audit import AuditLedger
+from app.decisions.service import DecisionService
 from app.ingest.poller import SimulatorPoller
 from app.ingest.store import StateStore
+from app.intelligence.fallback import FallbackPlanner
 from app.intelligence.forecast import DemandForecaster
 from app.intelligence.planner import ConstrainedPlanner
 from app.intelligence.risk import RiskEngine
 from app.intelligence.twin import DigitalTwin
 from app.resilience.breaker import CircuitBreaker
+from app.resilience.mode import ResilienceManager
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +39,10 @@ def create_app(
     risk_engine: RiskEngine | None = None,
     planner: ConstrainedPlanner | None = None,
     digital_twin: DigitalTwin | None = None,
+    audit_ledger: AuditLedger | None = None,
+    decision_service: DecisionService | None = None,
+    resilience_manager: ResilienceManager | None = None,
+    fallback_planner: FallbackPlanner | None = None,
     start_poller: bool = True,
 ) -> FastAPI:
     """Application factory for the Fuel Intelligence backend.
@@ -42,6 +50,9 @@ def create_app(
     Allows injecting mock or custom components during testing or standalone execution.
     """
     cfg = settings or get_settings()
+
+    app_resilience_manager = resilience_manager or ResilienceManager()
+    app_fallback_planner = fallback_planner or FallbackPlanner(settings=cfg)
 
     # Pre-instantiate singletons so they are bound immediately to app.state
     app_client = client or SimulatorClient(
@@ -68,7 +79,19 @@ def create_app(
     app_risk_engine = risk_engine or RiskEngine(settings=cfg, forecaster=app_forecaster)
     app_twin = digital_twin or DigitalTwin(settings=cfg, forecaster=app_forecaster)
     app_planner = planner or ConstrainedPlanner(
-        settings=cfg, risk_engine=app_risk_engine, twin_evaluator=app_twin
+        settings=cfg,
+        risk_engine=app_risk_engine,
+        twin_evaluator=app_twin,
+        fallback_planner=app_fallback_planner,
+        resilience_manager=app_resilience_manager,
+    )
+    app_audit_ledger = audit_ledger or AuditLedger(db_path=cfg.audit_db_path)
+    app_decision_service = decision_service or DecisionService(
+        client=app_client,
+        audit_ledger=app_audit_ledger,
+        planner=app_planner,
+        store=app_store,
+        settings=cfg,
     )
 
     @asynccontextmanager
@@ -113,6 +136,10 @@ def create_app(
     app.state.risk_engine = app_risk_engine
     app.state.digital_twin = app_twin
     app.state.planner = app_planner
+    app.state.fallback_planner = app_fallback_planner
+    app.state.resilience_manager = app_resilience_manager
+    app.state.audit_ledger = app_audit_ledger
+    app.state.decision_service = app_decision_service
 
     # Enable CORS for local dashboards and browser clients
     app.add_middleware(

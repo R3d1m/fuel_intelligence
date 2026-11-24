@@ -132,6 +132,12 @@ def render_operational_mode_banner(health_data: dict[str, Any] | None) -> None:
     else:
         st.info(f"⚪ **MODE: {mode}** | {reason}")
 
+    # Render any active data integrity or resilience alerts
+    alerts = health_data.get("alerts", [])
+    if alerts:
+        for alert_msg in alerts:
+            st.warning(f"⚠️ **Data Integrity Alert:** {alert_msg}")
+
 
 def render_status_panel(
     health_data: dict[str, Any] | None,
@@ -596,6 +602,239 @@ def render_active_events(state_data: dict[str, Any] | None) -> None:
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 
+def render_recommendations_deck(
+    client: BackendApiClient,
+    rec_data: dict[str, Any] | None,
+) -> None:
+    """Render actionable recommendations with approve/reject controls and impact stats."""
+    st.subheader("🎯 Actionable Dispatch Recommendations & Approval")
+
+    if not rec_data or "recommendations" not in rec_data:
+        st.info("No recommendations available.")
+        return
+
+    all_recs = rec_data.get("recommendations", [])
+    proposed_recs = [r for r in all_recs if r.get("status") == "PROPOSED"]
+
+    if not proposed_recs:
+        st.success(
+            "✅ **No pending recommendations.** "
+            "All station storage inventories are operating within safe parameters."
+        )
+        return
+
+    st.write(f"**{len(proposed_recs)} Actionable Recommendation(s) Pending Operator Decision:**")
+
+    for rec in proposed_recs:
+        rec_id = rec.get("recommendation_id", "")
+        station_name = rec.get("station_name", rec.get("station_id", "Unknown"))
+        fuel = rec.get("fuel_type", "UNKNOWN")
+        quantity = rec.get("quantity_liters", 0.0)
+        source_depot = rec.get("source_depot_name", rec.get("source_depot_id", "Unknown"))
+        route_id = rec.get("route_id", "Unknown")
+        p_before = rec.get("stockout_probability_before", 0.0) * 100.0
+        p_after = rec.get("stockout_probability_after", 0.0) * 100.0
+        p_drop = max(0.0, p_before - p_after)
+        cover_hours = rec.get("hours_of_cover_added", 0.0)
+        unmet_red = rec.get("expected_unmet_reduction_liters", 0.0)
+        mitigation = rec.get("mitigation_type", "FULL_PREVENTION")
+        constraints = rec.get("constraints", {})
+        bottleneck = constraints.get("bottleneck_constraint", "UNKNOWN")
+        needs_review = rec.get("needs_human_review", False)
+        alternatives = rec.get("alternatives", [])
+
+        with st.container(border=True):
+            col_hdr1, col_hdr2 = st.columns([3, 1])
+            with col_hdr1:
+                st.markdown(f"#### 🚚 **Dispatch {quantity:,.0f} L of `{fuel}` to {station_name}**")
+                dep_tick = rec.get("departure_tick", 0)
+                arr_tick = rec.get("expected_arrival_tick", 0)
+                trans_ticks = rec.get("transit_ticks", 0)
+                st.caption(
+                    f"**Route:** `{route_id}` from **{source_depot}** | "
+                    f"Departure: Tick {dep_tick} ➔ Arrival: Tick {arr_tick} "
+                    f"({trans_ticks} ticks transit)"
+                )
+            with col_hdr2:
+                if mitigation == "FULL_PREVENTION":
+                    st.success("🛡️ FULL PREVENTION")
+                elif mitigation == "PARTIAL_MITIGATION":
+                    st.warning("⏱️ PARTIAL MITIGATION")
+                else:
+                    st.info("🔄 RESTOCK")
+
+                if needs_review:
+                    st.error("⚠️ HUMAN REVIEW MANDATED")
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric(
+                "Stockout Risk",
+                f"{p_after:.1f}%",
+                f"-{p_drop:.1f}% drop",
+                delta_color="inverse",
+            )
+            m2.metric("Cover Added", f"+{cover_hours:.1f} hrs")
+            m3.metric("Unmet Liters Prevented", f"{unmet_red:,.0f} L")
+            m4.metric("Bottleneck Constraint", bottleneck.replace("_", " "))
+
+            st.markdown(f"*{rec.get('explanation', '')}*")
+
+            with st.expander("🔍 Constraints Breakdown & Runner-up Alternatives"):
+                c_col1, c_col2 = st.columns(2)
+                with c_col1:
+                    st.markdown("**Evaluated Operational Bounds:**")
+                    r_max = constraints.get("route_max_shipment", 0)
+                    st.markdown(f"- **Route Max Shipment:** {r_max:,.0f} L")
+                    st.markdown(
+                        f"- **Depot Stock (above reserve):** "
+                        f"{constraints.get('depot_available_inventory', 0):,.0f} L"
+                    )
+                    st.markdown(
+                        f"- **Depot Dispatch Remaining:** "
+                        f"{constraints.get('depot_remaining_dispatch_capacity', 0):,.0f} L"
+                    )
+                    st.markdown(
+                        f"- **Station Free Ullage:** "
+                        f"{constraints.get('station_effective_free_space', 0):,.0f} L"
+                    )
+                    st.markdown(
+                        f"- **Deficit / Amount Needed:** "
+                        f"{constraints.get('amount_needed', 0):,.0f} L"
+                    )
+                    st.markdown(f"- **Binding Constraint:** `{bottleneck}`")
+                with c_col2:
+                    st.markdown(f"**Feasible Alternatives Evaluated ({len(alternatives)}):**")
+                    if alternatives:
+                        for idx, alt in enumerate(alternatives, 1):
+                            st.markdown(
+                                f"**Option #{idx}:** Route `{alt.get('route_id')}` "
+                                f"via {alt.get('source_depot_name')}  \n"
+                                f"- Volume: {alt.get('quantity_liters', 0):,.0f} L | "
+                                f"Transit: {alt.get('transit_ticks', 0)} ticks  \n"
+                                f"- *Why not chosen:* {alt.get('reason_not_chosen')}"
+                            )
+                    else:
+                        st.caption("No viable alternative routes available for this station.")
+
+            btn_col1, btn_col2, note_col = st.columns([1, 1, 2])
+            with note_col:
+                op_notes = st.text_input(
+                    "Operator Justification (optional):",
+                    key=f"note_{rec_id}",
+                    placeholder="Enter reason or operational context...",
+                    label_visibility="collapsed",
+                )
+            with btn_col1:
+                if st.button(
+                    "✅ Approve & Dispatch",
+                    key=f"app_{rec_id}",
+                    use_container_width=True,
+                    type="primary",
+                ):
+                    resp = client.approve_recommendation(rec_id, operator_notes=op_notes or None)
+                    if resp.success:
+                        alloc_id = resp.data.get("recommendation", {}).get(
+                            "simulator_allocation_id"
+                        )
+                        st.toast(
+                            f"✅ Approved and dispatched allocation #{alloc_id}!",
+                            icon="🚚",
+                        )
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Dispatch failed: {resp.error}")
+            with btn_col2:
+                if st.button(
+                    "❌ Reject",
+                    key=f"rej_{rec_id}",
+                    use_container_width=True,
+                ):
+                    resp = client.reject_recommendation(rec_id, operator_notes=op_notes or None)
+                    if resp.success:
+                        st.toast(
+                            "🚫 Recommendation rejected and recorded in audit.",
+                            icon="📝",
+                        )
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Rejection failed: {resp.error}")
+
+
+def render_decision_audit_ledger(
+    client: BackendApiClient,
+    audit_data: dict[str, Any] | None,
+    stats_data: dict[str, Any] | None,
+) -> None:
+    """Render SQLite audit ledger KPIs, decision history, and event timeline."""
+    st.subheader("📜 Decision Audit Ledger & Operator Traceability")
+
+    stats = stats_data.get("stats", {}) if stats_data else {}
+    total_recs = stats.get("total_recommendations", 0)
+    submitted_count = stats.get("submitted_count", 0)
+    rejected_count = stats.get("rejected_count", 0)
+    failed_count = stats.get("failed_count", 0)
+    rejection_rate = stats.get("rejection_rate", 0.0) * 100.0
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Total Formulated", f"{total_recs}")
+    k2.metric("Submitted", f"{submitted_count}")
+    k3.metric("Rejected", f"{rejected_count}")
+    k4.metric("Failed", f"{failed_count}")
+    k5.metric("Rejection Rate", f"{rejection_rate:.1f}%")
+
+    st.markdown("---")
+    st.markdown("#### 📋 Historical Recommendations & Decision Outcomes")
+
+    all_recs_resp = client.get_recommendations(limit=100)
+    if all_recs_resp.success and all_recs_resp.data:
+        recs = all_recs_resp.data.get("recommendations", [])
+        if recs:
+            table_rows = []
+            for r in recs:
+                table_rows.append(
+                    {
+                        "Created (UTC)": r.get("created_at", "")[:19].replace("T", " "),
+                        "Station": r.get("station_name", r.get("station_id", "")),
+                        "Fuel": r.get("fuel_type", ""),
+                        "Liters": f"{r.get('quantity_liters', 0):,.0f}",
+                        "Depot": r.get("source_depot_name", r.get("source_depot_id", "")),
+                        "Risk Before": f"{r.get('stockout_probability_before', 0) * 100:.0f}%",
+                        "Risk After": f"{r.get('stockout_probability_after', 0) * 100:.0f}%",
+                        "Status": r.get("status", ""),
+                        "Alloc ID": r.get("simulator_allocation_id") or "—",
+                        "Failure / Notes": (
+                            r.get("failure_reason") or r.get("operator_notes") or "—"
+                        ),
+                    }
+                )
+            df_recs = pd.DataFrame(table_rows)
+            st.dataframe(df_recs, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No historical recommendations recorded in audit ledger.")
+    else:
+        st.info("Unable to query recommendation history.")
+
+    st.markdown("---")
+    st.markdown("#### ⏱️ State Transition Audit Event Log")
+    events = audit_data.get("events", []) if audit_data else []
+    if events:
+        event_rows = []
+        for e in events:
+            event_rows.append(
+                {
+                    "Timestamp (UTC)": e.get("timestamp", "")[:19].replace("T", " "),
+                    "Event": e.get("event_type", ""),
+                    "Transition": f"{e.get('from_status') or 'NEW'} ➔ {e.get('to_status', '')}",
+                    "Recommendation ID": e.get("recommendation_id", "")[:28] + "...",
+                    "Operator Notes": e.get("operator_notes") or "—",
+                }
+            )
+        df_events = pd.DataFrame(event_rows)
+        st.dataframe(df_events, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No audit events recorded yet.")
+
+
 # Main dynamic dashboard fragment that auto-refreshes
 @st.fragment(run_every=2)
 def render_dashboard_fragment(backend_url: str, severity_filter: str) -> None:
@@ -618,11 +857,17 @@ def render_dashboard_fragment(backend_url: str, severity_filter: str) -> None:
     state_resp: ApiResponse = client.get_state()
     forecast_resp: ApiResponse = client.get_forecasts()
     risk_resp: ApiResponse = client.get_risks()
+    rec_resp: ApiResponse = client.get_recommendations()
+    audit_resp: ApiResponse = client.get_audit_history(limit=50)
+    stats_resp: ApiResponse = client.get_audit_stats()
 
     health_data = health_resp.data if health_resp.success else None
     state_data = state_resp.data if state_resp.success else None
     forecast_data = forecast_resp.data if forecast_resp.success else None
     risk_data = risk_resp.data if risk_resp.success else None
+    rec_data = rec_resp.data if rec_resp.success else None
+    audit_data = audit_resp.data if audit_resp.success else None
+    stats_data = stats_resp.data if stats_resp.success else None
 
     # Top: Operational Mode Banner
     render_operational_mode_banner(health_data)
@@ -634,21 +879,31 @@ def render_dashboard_fragment(backend_url: str, severity_filter: str) -> None:
 
     st.markdown("---")
 
+    # Actionable Dispatch Recommendations & Approval
+    render_recommendations_deck(client, rec_data)
+
+    st.markdown("---")
+
     # Priority Urgency Alerts
     render_urgency_alerts(risk_data, severity_filter)
 
     st.markdown("---")
 
     # Tabbed Operational Views
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         [
+            "🎯 Recommendations & Approvals",
             "📊 Risk Matrix",
             "🏪 Station Tanks",
             "🏭 Bulk Depots",
             "🚚 Logistics Routes",
             "⚡ Active Events",
+            "📜 Decision Audit Ledger",
         ]
     )
+
+    with tab0:
+        render_recommendations_deck(client, rec_data)
 
     with tab1:
         render_risk_matrix(risk_data, severity_filter)
@@ -664,6 +919,9 @@ def render_dashboard_fragment(backend_url: str, severity_filter: str) -> None:
 
     with tab5:
         render_active_events(state_data)
+
+    with tab6:
+        render_decision_audit_ledger(client, audit_data, stats_data)
 
     # Footer timestamp
     st.caption(
@@ -708,6 +966,18 @@ def main() -> None:
                 )
             else:
                 st.toast(f"❌ Sync failed: {sync_resp.error}", icon="⚠️")
+
+        if st.button("🎯 Formulate Dispatch Recommendations", use_container_width=True):
+            client = BackendApiClient(base_url=backend_url, timeout_seconds=8.0)
+            rec_resp = client.generate_recommendations()
+            if rec_resp.success:
+                total_recs = rec_resp.data.get("total_count", 0)
+                st.toast(
+                    f"✅ Formulated {total_recs} recommendation(s)!",
+                    icon="🎯",
+                )
+            else:
+                st.toast(f"❌ Planning failed: {rec_resp.error}", icon="⚠️")
 
         st.markdown("---")
         st.markdown("### 📋 Quick Reference")

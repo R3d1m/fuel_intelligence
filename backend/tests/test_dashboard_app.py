@@ -6,8 +6,10 @@ from dashboard.app import (
     get_default_backend_url,
     render_active_events,
     render_dashboard_fragment,
+    render_decision_audit_ledger,
     render_depot_status,
     render_operational_mode_banner,
+    render_recommendations_deck,
     render_risk_matrix,
     render_route_status,
     render_stations_inventory,
@@ -381,6 +383,18 @@ def test_render_dashboard_fragment_connected() -> None:
             "depot_risks": {},
         },
     )
+    mock_client.get_recommendations.return_value = ApiResponse(
+        success=True,
+        data={"total_count": 0, "recommendations": []},
+    )
+    mock_client.get_audit_history.return_value = ApiResponse(
+        success=True,
+        data={"total_events": 0, "events": []},
+    )
+    mock_client.get_audit_stats.return_value = ApiResponse(
+        success=True,
+        data={"stats": {"total_recommendations": 0, "rejection_rate": 0.0}},
+    )
 
     with (
         patch("dashboard.app.BackendApiClient", return_value=mock_client),
@@ -390,13 +404,97 @@ def test_render_dashboard_fragment_connected() -> None:
         patch("streamlit.columns") as mock_cols,
         patch("streamlit.caption"),
     ):
-        mock_tabs.return_value = [
-            MagicMock(),
-            MagicMock(),
-            MagicMock(),
-            MagicMock(),
-            MagicMock(),
+        mock_tabs.return_value = [MagicMock() for _ in range(7)]
+        mock_cols.side_effect = lambda spec: [
+            MagicMock() for _ in range(spec if isinstance(spec, int) else len(spec))
         ]
-        mock_cols.return_value = [MagicMock(), MagicMock(), MagicMock(), MagicMock()]
         render_dashboard_fragment.__wrapped__("http://127.0.0.1:8001", "ALL")
         assert mock_succ.called
+
+
+def test_render_recommendations_deck() -> None:
+    mock_client = MagicMock()
+    # 1. Empty recommendations
+    with patch("streamlit.success") as mock_succ:
+        render_recommendations_deck(mock_client, {"recommendations": []})
+        mock_succ.assert_called_once()
+        assert "No pending recommendations" in mock_succ.call_args[0][0]
+
+    # 2. Populated recommendations
+    rec = {
+        "recommendation_id": "rec_test_1",
+        "station_name": "Dhaka Central",
+        "fuel_type": "DIESEL",
+        "quantity_liters": 10000.0,
+        "source_depot_name": "Depot North",
+        "route_id": "route_1",
+        "departure_tick": 10,
+        "expected_arrival_tick": 12,
+        "transit_ticks": 2,
+        "mitigation_type": "FULL_PREVENTION",
+        "urgency_score": 88.0,
+        "status": "PROPOSED",
+        "stockout_probability_before": 0.85,
+        "stockout_probability_after": 0.15,
+        "hours_of_cover_added": 4.5,
+        "expected_unmet_reduction_liters": 10000.0,
+        "explanation": "Urgent stockout mitigation",
+        "constraints": {
+            "route_max_shipment": 15000.0,
+            "depot_available_inventory": 20000.0,
+            "depot_remaining_dispatch_capacity": 20000.0,
+            "station_effective_free_space": 12000.0,
+            "amount_needed": 10000.0,
+            "bottleneck_constraint": "AMOUNT_NEEDED",
+        },
+        "alternatives": [],
+    }
+    with (
+        patch("streamlit.container"),
+        patch("streamlit.columns") as mock_cols,
+        patch("streamlit.metric"),
+        patch("streamlit.markdown"),
+        patch("streamlit.expander"),
+        patch("streamlit.text_input"),
+        patch("streamlit.button", return_value=False),
+    ):
+        mock_cols.side_effect = lambda spec: [
+            MagicMock() for _ in range(spec if isinstance(spec, int) else len(spec))
+        ]
+        render_recommendations_deck(mock_client, {"recommendations": [rec]})
+
+
+def test_render_decision_audit_ledger() -> None:
+    mock_client = MagicMock()
+    mock_client.get_recommendations.return_value = ApiResponse(
+        success=True,
+        data={
+            "recommendations": [
+                {
+                    "created_at": "2026-11-23T10:00:00Z",
+                    "station_name": "Dhaka Central",
+                    "fuel_type": "DIESEL",
+                    "quantity_liters": 10000.0,
+                    "source_depot_name": "Depot North",
+                    "stockout_probability_before": 0.8,
+                    "stockout_probability_after": 0.2,
+                    "status": "SUBMITTED",
+                    "simulator_allocation_id": 123,
+                    "operator_notes": "Approved",
+                }
+            ]
+        },
+    )
+    with (
+        patch("streamlit.columns") as mock_cols,
+        patch("streamlit.metric"),
+        patch("streamlit.dataframe") as mock_df,
+        patch("streamlit.markdown"),
+    ):
+        mock_cols.return_value = [MagicMock() for _ in range(5)]
+        render_decision_audit_ledger(
+            mock_client,
+            audit_data={"events": []},
+            stats_data={"stats": {"total_recommendations": 1, "submitted_count": 1}},
+        )
+        assert mock_df.called

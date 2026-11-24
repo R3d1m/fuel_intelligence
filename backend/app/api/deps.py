@@ -10,13 +10,17 @@ from fastapi import Request
 
 from app.adapters.simulator_client import SimulatorClient
 from app.config import Settings, get_settings
+from app.decisions.audit import AuditLedger
+from app.decisions.service import DecisionService
 from app.ingest.poller import SimulatorPoller
 from app.ingest.store import StateStore
+from app.intelligence.fallback import FallbackPlanner
 from app.intelligence.forecast import DemandForecaster
 from app.intelligence.planner import ConstrainedPlanner
 from app.intelligence.risk import RiskEngine
 from app.intelligence.twin import DigitalTwin
 from app.resilience.breaker import CircuitBreaker
+from app.resilience.mode import ResilienceManager
 
 
 def get_app_settings() -> Settings:
@@ -74,3 +78,46 @@ def get_planner(request: Request) -> ConstrainedPlanner:
         risk_engine=get_risk_engine(request),
         twin_evaluator=get_digital_twin(request),
     )
+
+
+def get_audit_ledger(request: Request) -> AuditLedger:
+    """Extract the AuditLedger singleton from app.state."""
+    if hasattr(request.app.state, "audit_ledger") and request.app.state.audit_ledger is not None:
+        return cast(AuditLedger, request.app.state.audit_ledger)
+    return AuditLedger(db_path=get_app_settings().audit_db_path)
+
+
+def get_decision_service(request: Request) -> DecisionService:
+    """Extract the DecisionService singleton from app.state."""
+    if (
+        hasattr(request.app.state, "decision_service")
+        and request.app.state.decision_service is not None
+    ):
+        return cast(DecisionService, request.app.state.decision_service)
+    return DecisionService(
+        client=get_simulator_client(request),
+        audit_ledger=get_audit_ledger(request),
+        planner=get_planner(request),
+        store=get_state_store(request),
+        settings=get_app_settings(),
+    )
+
+
+def get_resilience_manager(request: Request) -> ResilienceManager:
+    """Extract the ResilienceManager singleton from app.state."""
+    if (
+        hasattr(request.app.state, "resilience_manager")
+        and request.app.state.resilience_manager is not None
+    ):
+        return cast(ResilienceManager, request.app.state.resilience_manager)
+    return ResilienceManager()
+
+
+def get_fallback_planner(request: Request) -> FallbackPlanner:
+    """Extract the FallbackPlanner service from app.state."""
+    if (
+        hasattr(request.app.state, "fallback_planner")
+        and request.app.state.fallback_planner is not None
+    ):
+        return cast(FallbackPlanner, request.app.state.fallback_planner)
+    return FallbackPlanner(settings=get_app_settings())

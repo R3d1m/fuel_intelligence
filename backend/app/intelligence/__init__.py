@@ -1,5 +1,9 @@
 """Intelligence, risk forecasting, planning, and digital twin."""
 
+from app.intelligence.fallback import (
+    FallbackPlanner,
+    generate_fallback_plan,
+)
 from app.intelligence.forecast import (
     AnomalyReport,
     DemandForecaster,
@@ -49,6 +53,8 @@ __all__ = [
     "DepotFuelRisk",
     "DigitalTwin",
     "DispatchPlan",
+    "FallbackPlanner",
+    "generate_fallback_plan",
     "FleetDemandForecast",
     "FleetRiskAssessment",
     "ForecastMetrics",

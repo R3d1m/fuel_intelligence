@@ -37,13 +37,13 @@ class BackendApiClient:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
 
-    def _get(self, path: str) -> ApiResponse:
+    def _get(self, path: str, params: dict[str, Any] | None = None) -> ApiResponse:
         """Perform a synchronous GET request with comprehensive error handling."""
         url = f"{self.base_url}{path}"
         timeout = httpx.Timeout(self.timeout_seconds, connect=1.5)
         try:
             with httpx.Client(timeout=timeout) as client:
-                response = client.get(url)
+                response = client.get(url, params=params)
                 if response.is_success:
                     return ApiResponse(
                         success=True,
@@ -153,3 +153,53 @@ class BackendApiClient:
     def trigger_sync(self) -> ApiResponse:
         """Trigger an immediate manual synchronization poll cycle."""
         return self._post("/sync")
+
+    def get_recommendations(
+        self,
+        status: str | None = None,
+        station_id: str | None = None,
+    ) -> ApiResponse:
+        """Fetch actionable recommendations from backend."""
+        params: dict[str, Any] = {}
+        if status:
+            params["status"] = status
+        if station_id:
+            params["station_id"] = station_id
+        return self._get("/recommendations", params=params or None)
+
+    def generate_recommendations(self) -> ApiResponse:
+        """Trigger recommendation generation on the latest snapshot."""
+        return self._post("/recommendations/generate")
+
+    def approve_recommendation(
+        self,
+        recommendation_id: str,
+        operator_notes: str | None = None,
+    ) -> ApiResponse:
+        """Approve and dispatch a recommendation to the simulator."""
+        payload = {"operator_notes": operator_notes} if operator_notes else {}
+        return self._post(f"/recommendations/{recommendation_id}/approve", json_data=payload)
+
+    def reject_recommendation(
+        self,
+        recommendation_id: str,
+        operator_notes: str | None = None,
+    ) -> ApiResponse:
+        """Reject a proposed recommendation with operator rationale."""
+        payload = {"operator_notes": operator_notes} if operator_notes else {}
+        return self._post(f"/recommendations/{recommendation_id}/reject", json_data=payload)
+
+    def get_audit_history(
+        self,
+        recommendation_id: str | None = None,
+        limit: int = 50,
+    ) -> ApiResponse:
+        """Fetch audit log history of operator decisions and transitions."""
+        params: dict[str, Any] = {"limit": limit}
+        if recommendation_id:
+            params["recommendation_id"] = recommendation_id
+        return self._get("/decisions/audit", params=params)
+
+    def get_audit_stats(self) -> ApiResponse:
+        """Fetch consolidated decision statistics from the SQLite audit ledger."""
+        return self._get("/decisions/stats")
