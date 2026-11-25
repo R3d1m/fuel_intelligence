@@ -203,3 +203,75 @@ class BackendApiClient:
     def get_audit_stats(self) -> ApiResponse:
         """Fetch consolidated decision statistics from the SQLite audit ledger."""
         return self._get("/decisions/stats")
+
+    def get_metrics(self) -> ApiResponse:
+        """Fetch Prometheus /metrics exposition text and parse key counters/gauges."""
+        try:
+            url = f"{self.base_url}/metrics"
+            with httpx.Client(timeout=self.timeout_seconds) as client:
+                response = client.get(url)
+                if response.is_success:
+                    parsed = _parse_prometheus_text(response.text)
+                    return ApiResponse(
+                        success=True,
+                        data=parsed,
+                        status_code=response.status_code,
+                        is_connected=True,
+                    )
+                return ApiResponse(
+                    success=False,
+                    error=f"HTTP {response.status_code}",
+                    status_code=response.status_code,
+                    is_connected=True,
+                )
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            return ApiResponse(
+                success=False,
+                error=f"Backend unreachable: {exc}",
+                is_connected=False,
+            )
+        except Exception as exc:
+            return ApiResponse(
+                success=False,
+                error=f"Unexpected error reading /metrics: {exc}",
+                is_connected=False,
+            )
+
+
+def _parse_prometheus_text(text: str) -> dict[str, float]:
+    """Parse Prometheus exposition text into summary totals for the dashboard."""
+    summary: dict[str, float] = {
+        "http_requests_total": 0.0,
+        "simulator_errors_total": 0.0,
+        "fallback_activations_total": 0.0,
+        "forecast_mae_liters": 0.0,
+        "recommendations_submitted": 0.0,
+        "recommendations_failed": 0.0,
+    }
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.rsplit(" ", 1)
+        if len(parts) != 2:
+            continue
+        metric_part, val_str = parts
+        try:
+            val = float(val_str)
+        except ValueError:
+            continue
+
+        if metric_part.startswith("fuel_http_requests_total"):
+            summary["http_requests_total"] += val
+        elif metric_part.startswith("fuel_simulator_errors_total"):
+            summary["simulator_errors_total"] += val
+        elif metric_part.startswith("fuel_fallback_activations_total"):
+            summary["fallback_activations_total"] += val
+        elif metric_part.startswith("fuel_forecast_mae_liters"):
+            summary["forecast_mae_liters"] = val
+        elif metric_part.startswith("fuel_recommendations_total"):
+            if 'outcome="SUBMITTED"' in metric_part:
+                summary["recommendations_submitted"] += val
+            elif 'outcome="FAILED"' in metric_part:
+                summary["recommendations_failed"] += val
+    return summary

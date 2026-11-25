@@ -5,10 +5,11 @@ and background poller loop with robust lifecycle management and dependency injec
 """
 
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.adapters.simulator_client import SimulatorClient
@@ -23,6 +24,8 @@ from app.intelligence.forecast import DemandForecaster
 from app.intelligence.planner import ConstrainedPlanner
 from app.intelligence.risk import RiskEngine
 from app.intelligence.twin import DigitalTwin
+from app.observability.logging import configure_logging
+from app.observability.metrics import record_http_request
 from app.resilience.breaker import CircuitBreaker
 from app.resilience.mode import ResilienceManager
 
@@ -50,6 +53,7 @@ def create_app(
     Allows injecting mock or custom components during testing or standalone execution.
     """
     cfg = settings or get_settings()
+    configure_logging(level=cfg.log_level, json_format=True)
 
     app_resilience_manager = resilience_manager or ResilienceManager()
     app_fallback_planner = fallback_planner or FallbackPlanner(settings=cfg)
@@ -149,6 +153,25 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def prometheus_http_middleware(request: Request, call_next: Any) -> Any:
+        start = time.perf_counter()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        finally:
+            elapsed = time.perf_counter() - start
+            route = request.scope.get("route")
+            endpoint = getattr(route, "path", None) or request.url.path
+            record_http_request(
+                method=request.method,
+                endpoint=endpoint,
+                status_code=status_code,
+                duration_seconds=elapsed,
+            )
 
     # Attach API routers
     app.include_router(api_router)

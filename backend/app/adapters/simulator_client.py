@@ -11,6 +11,7 @@ Implements:
 import asyncio
 import logging
 import random
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
@@ -39,6 +40,7 @@ from app.domain.models import (
     Station,
     SupplyArrival,
 )
+from app.observability.metrics import record_simulator_call, record_simulator_error
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +129,7 @@ class SimulatorClient:
         last_exception: Exception | None = None
 
         for attempt in range(self.max_retries + 1):
+            attempt_start = time.perf_counter()
             try:
                 response = await self._client.request(
                     method=method,
@@ -137,6 +140,10 @@ class SimulatorClient:
 
                 # Check if simulator returned 503 Service Unavailable (e.g. injected fault)
                 if response.status_code == 503:
+                    record_simulator_call(
+                        method, path, "http_503", time.perf_counter() - attempt_start
+                    )
+                    record_simulator_error("http_503")
                     if attempt < self.max_retries:
                         delay = self._compute_backoff(attempt)
                         logger.warning(
@@ -160,6 +167,13 @@ class SimulatorClient:
 
                 # Handle other 4xx/5xx status codes immediately (do not retry domain errors)
                 if response.is_error:
+                    record_simulator_call(
+                        method,
+                        path,
+                        f"http_{response.status_code}",
+                        time.perf_counter() - attempt_start,
+                    )
+                    record_simulator_error(f"http_{response.status_code}")
                     payload = self._parse_json_or_text(response)
                     raise parse_simulator_error(
                         status_code=response.status_code,
@@ -168,11 +182,15 @@ class SimulatorClient:
                     )
 
                 # Successful HTTP response (2xx)
+                record_simulator_call(method, path, "success", time.perf_counter() - attempt_start)
                 payload = self._parse_json_or_text(response)
                 return response.status_code, payload, dict(response.headers)
 
             except RETRYABLE_EXCEPTIONS as exc:
                 last_exception = exc
+                err_kind = "timeout" if isinstance(exc, httpx.TimeoutException) else "connect_error"
+                record_simulator_call(method, path, err_kind, time.perf_counter() - attempt_start)
+                record_simulator_error(err_kind)
                 if attempt < self.max_retries:
                     delay = self._compute_backoff(attempt)
                     logger.warning(

@@ -3,7 +3,7 @@
 import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.adapters.simulator_client import SimulatorClient
 from app.api.deps import (
@@ -49,6 +49,11 @@ from app.intelligence.forecast import DemandForecaster
 from app.intelligence.planner import ConstrainedPlanner
 from app.intelligence.risk import RiskAlert, RiskEngine, calculate_urgency_score
 from app.intelligence.twin import DigitalTwin
+from app.observability.metrics import (
+    record_alert,
+    render_prometheus_metrics,
+    set_forecast_accuracy,
+)
 from app.resilience.breaker import CircuitBreaker, CircuitState
 from app.resilience.mode import ResilienceManager, diagnose_operational_mode
 
@@ -274,6 +279,7 @@ async def get_fleet_forecasts(
     }
 
     serialized_anomalies = [a.model_dump(mode="json") for a in fleet_fc.active_anomalies]
+    set_forecast_accuracy(fleet_fc.average_mae, fleet_fc.average_mape)
 
     return ForecastResponse(
         mode=diagnosis.mode,
@@ -442,6 +448,8 @@ async def get_risks(
         for dp_id, fuels in fleet_risk.depot_risks.items()
     }
     serialized_alerts = [a.model_dump(mode="json") for a in fleet_risk.active_alerts]
+    for alert in fleet_risk.active_alerts:
+        record_alert(alert.severity.value)
 
     return RiskResponse(
         mode=diagnosis.mode,
@@ -1010,3 +1018,15 @@ async def get_audit_stats(
         stats=stats,
         evaluated_at=datetime.now(UTC),
     )
+
+
+@router.get(
+    "/metrics",
+    summary="Prometheus Metrics Endpoint",
+    description="Exposes platform observability metrics in Prometheus text exposition format.",
+    include_in_schema=True,
+)
+async def get_metrics() -> Response:
+    """Serve Prometheus metrics in standard text exposition format."""
+    payload, content_type = render_prometheus_metrics()
+    return Response(content=payload, media_type=content_type)

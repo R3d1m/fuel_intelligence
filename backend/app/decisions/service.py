@@ -26,6 +26,8 @@ from app.decisions.models import (
 from app.domain.models import AllocationCreate, SimulatorSnapshot
 from app.ingest.store import StateStore
 from app.intelligence.planner import ConstrainedPlanner, DispatchPlan
+from app.observability.logging import log_event
+from app.observability.metrics import record_recommendation_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +107,7 @@ class DecisionService:
                 "signals": signals,
             }
             self.audit_ledger.save_recommendation(rec, raw_inputs=raw_inputs)
+            record_recommendation_outcome(RecommendationStatus.PROPOSED.value)
 
             event_type = "FALLBACK_POLICY_ACTIVATED" if is_fallback else "PROPOSAL_CREATED"
             reason = getattr(plan, "fallback_reason", "degraded mode")
@@ -203,6 +206,17 @@ class DecisionService:
             rec.operator_notes = operator_notes
 
         self.audit_ledger.save_recommendation(rec)
+        record_recommendation_outcome(RecommendationStatus.APPROVED.value)
+        log_event(
+            logger,
+            event="decision.approved",
+            message=f"Recommendation {rec.recommendation_id} approved for dispatch",
+            recommendation_id=rec.recommendation_id,
+            station_id=rec.station_id,
+            source_depot_id=rec.source_depot_id,
+            fuel_type=rec.fuel_type.value,
+            quantity_liters=rec.quantity_liters,
+        )
         self.audit_ledger.record_audit_event(
             recommendation_id=rec.recommendation_id,
             event_type="DECISION_APPROVED",
@@ -235,6 +249,18 @@ class DecisionService:
             rec.failure_code = None
             rec.failure_reason = None
             self.audit_ledger.save_recommendation(rec)
+            record_recommendation_outcome(RecommendationStatus.SUBMITTED.value)
+            log_event(
+                logger,
+                event="decision.submitted",
+                message=(
+                    f"Allocation {alloc.id} submitted for recommendation {rec.recommendation_id}"
+                ),
+                recommendation_id=rec.recommendation_id,
+                simulator_allocation_id=alloc.id,
+                station_id=rec.station_id,
+                quantity_liters=rec.quantity_liters,
+            )
 
             self.audit_ledger.record_audit_event(
                 recommendation_id=rec.recommendation_id,
@@ -266,6 +292,15 @@ class DecisionService:
             rec.failure_code = err_code
             rec.failure_reason = guidance
             self.audit_ledger.save_recommendation(rec)
+            record_recommendation_outcome(RecommendationStatus.FAILED.value)
+            log_event(
+                logger,
+                event="decision.failed",
+                message=f"Allocation dispatch failed for recommendation {rec.recommendation_id}",
+                level=logging.WARNING,
+                recommendation_id=rec.recommendation_id,
+                error_code=err_code,
+            )
 
             self.audit_ledger.record_audit_event(
                 recommendation_id=rec.recommendation_id,
@@ -296,6 +331,15 @@ class DecisionService:
             rec.failure_code = err_code
             rec.failure_reason = guidance
             self.audit_ledger.save_recommendation(rec)
+            record_recommendation_outcome(RecommendationStatus.FAILED.value)
+            log_event(
+                logger,
+                event="decision.failed",
+                message=f"Allocation dispatch failed for recommendation {rec.recommendation_id}",
+                level=logging.WARNING,
+                recommendation_id=rec.recommendation_id,
+                error_code=err_code,
+            )
 
             self.audit_ledger.record_audit_event(
                 recommendation_id=rec.recommendation_id,
@@ -335,6 +379,15 @@ class DecisionService:
             rec.operator_notes = operator_notes
 
         self.audit_ledger.save_recommendation(rec)
+        record_recommendation_outcome(RecommendationStatus.REJECTED.value)
+        log_event(
+            logger,
+            event="decision.rejected",
+            message=f"Recommendation {rec.recommendation_id} rejected by operator",
+            recommendation_id=rec.recommendation_id,
+            station_id=rec.station_id,
+            rationale=operator_notes,
+        )
         self.audit_ledger.record_audit_event(
             recommendation_id=rec.recommendation_id,
             event_type="DECISION_REJECTED",

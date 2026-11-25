@@ -16,6 +16,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from app.domain.models import OperationalMode
+from app.observability.logging import log_event
+from app.observability.metrics import set_operational_mode
 from app.resilience.breaker import CircuitBreaker, CircuitState
 
 if TYPE_CHECKING:
@@ -52,6 +54,7 @@ class ResilienceManager:
         self._consecutive_model_failures: int = 0
         self._malformed_rejected: bool = False
         self._malformed_reason: str | None = None
+        self._last_mode: OperationalMode | None = None
 
     @property
     def is_model_failed(self) -> bool:
@@ -116,6 +119,21 @@ class ResilienceManager:
         """Reset all tracked resilience failure states."""
         self.record_model_success()
         self.clear_malformed_snapshot()
+        self._last_mode = None
+
+    def record_evaluated_mode(self, mode: OperationalMode, reason: str) -> None:
+        """Record the latest evaluated operational mode and log transitions."""
+        if self._last_mode is not None and mode != self._last_mode:
+            log_event(
+                logger,
+                event="mode.changed",
+                message=f"Operational mode changed: {self._last_mode.value} -> {mode.value}",
+                level=logging.WARNING if mode != OperationalMode.NORMAL else logging.INFO,
+                from_mode=self._last_mode.value,
+                to_mode=mode.value,
+                reason=reason,
+            )
+        self._last_mode = mode
 
     def get_mode(
         self,
@@ -185,6 +203,31 @@ def diagnose_operational_mode(
     stale_threshold_seconds: float = 10.0,
 ) -> ModeDiagnosis:
     """Perform a comprehensive diagnostic evaluation of the system's operational mode."""
+    diagnosis = _evaluate_mode_diagnosis(
+        breaker=breaker,
+        store=store,
+        forecaster_failed=forecaster_failed,
+        twin_failed=twin_failed,
+        malformed_rejected=malformed_rejected,
+        manager=manager,
+        stale_threshold_seconds=stale_threshold_seconds,
+    )
+    set_operational_mode(diagnosis.mode.value)
+    if manager is not None:
+        manager.record_evaluated_mode(diagnosis.mode, diagnosis.reason)
+    return diagnosis
+
+
+def _evaluate_mode_diagnosis(
+    breaker: CircuitBreaker | None = None,
+    store: StateStore | None = None,
+    forecaster_failed: bool = False,
+    twin_failed: bool = False,
+    malformed_rejected: bool = False,
+    manager: ResilienceManager | None = None,
+    stale_threshold_seconds: float = 10.0,
+) -> ModeDiagnosis:
+    """Internal mode diagnosis evaluator."""
     now = datetime.now(UTC)
     circuit_state_str = breaker.state.value if breaker else CircuitState.CLOSED.value
     data_age = store.snapshot_age_seconds() if store else None

@@ -11,6 +11,9 @@ from collections.abc import Callable, Coroutine
 from enum import StrEnum
 from typing import Any, TypeVar
 
+from app.observability.logging import log_event
+from app.observability.metrics import set_circuit_breaker_state
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -62,6 +65,7 @@ class CircuitBreaker:
         self._failure_count: int = 0
         self._last_failure_time: float | None = None
         self._last_state_change: float = self._clock()
+        set_circuit_breaker_state(self.name, self._state.value)
 
     @property
     def state(self) -> CircuitState:
@@ -109,14 +113,28 @@ class CircuitBreaker:
     def _transition_to(self, new_state: CircuitState) -> None:
         """Internal state transition handler with audit logging."""
         if self._state != new_state:
-            logger.warning(
-                "Circuit breaker '%s' state transition: %s -> %s",
-                self.name,
-                self._state.value,
-                new_state.value,
-            )
+            old_state = self._state
             self._state = new_state
             self._last_state_change = self._clock()
+            set_circuit_breaker_state(self.name, new_state.value)
+            event_name = {
+                CircuitState.OPEN: "simulator.breaker_open",
+                CircuitState.HALF_OPEN: "simulator.breaker_half_open",
+                CircuitState.CLOSED: "simulator.breaker_closed",
+            }.get(new_state, "simulator.breaker_transition")
+            log_event(
+                logger,
+                event=event_name,
+                message=(
+                    f"Circuit breaker '{self.name}' state transition: "
+                    f"{old_state.value} -> {new_state.value}"
+                ),
+                level=logging.WARNING if new_state == CircuitState.OPEN else logging.INFO,
+                breaker=self.name,
+                from_state=old_state.value,
+                to_state=new_state.value,
+                consecutive_failures=self._failure_count,
+            )
 
     def can_execute(self) -> bool:
         """Check whether execution is currently permitted through the circuit breaker.

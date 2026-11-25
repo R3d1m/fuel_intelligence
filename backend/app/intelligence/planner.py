@@ -46,6 +46,8 @@ from app.intelligence.risk import (
     StationFuelRisk,
     calculate_urgency_score,
 )
+from app.observability.logging import log_event
+from app.observability.metrics import record_fallback_activation
 
 logger = logging.getLogger(__name__)
 
@@ -420,9 +422,18 @@ class ConstrainedPlanner:
             self.resilience_manager, "is_model_failed", False
         )
         if force_fallback or is_model_failed:
-            logger.warning(
-                "Model degradation detected (or force_fallback=True). "
-                "Delegating dispatch planning to FallbackPlanner."
+            reason = (
+                "force_fallback=True requested"
+                if force_fallback
+                else "Intelligence models offline/degraded; active fallback policy triggered"
+            )
+            record_fallback_activation(reason)
+            log_event(
+                logger,
+                event="fallback.activated",
+                message="Delegating dispatch planning to FallbackPlanner.",
+                level=logging.WARNING,
+                reason=reason,
             )
             return self.fallback_planner.generate_plan(
                 snapshot=snapshot,
@@ -467,9 +478,18 @@ class ConstrainedPlanner:
                 )
                 if self.resilience_manager:
                     self.resilience_manager.record_forecaster_failure(str(exc))
+                reason = f"Risk engine/forecaster failed: {exc}"
+                record_fallback_activation(reason)
+                log_event(
+                    logger,
+                    event="fallback.activated",
+                    message="Risk engine failed; delegating dispatch planning to FallbackPlanner.",
+                    level=logging.WARNING,
+                    reason=reason,
+                )
                 return self.fallback_planner.generate_plan(
                     snapshot=snapshot,
-                    fallback_reason=f"Risk engine/forecaster failed: {exc}",
+                    fallback_reason=reason,
                 )
 
         # 2. Build index maps for fast lookup

@@ -143,6 +143,7 @@ def render_status_panel(
     health_data: dict[str, Any] | None,
     forecast_data: dict[str, Any] | None,
     risk_data: dict[str, Any] | None,
+    metrics_data: dict[str, Any] | None = None,
 ) -> None:
     """Render 4-column KPI status panel across simulator, backend, forecast, and risk."""
     col1, col2, col3, col4 = st.columns(4)
@@ -224,6 +225,16 @@ def render_status_panel(
         else:
             st.metric(label="Worst Severity", value="--")
             st.caption("Awaiting risk assessment")
+
+    if metrics_data is not None:
+        st.caption(
+            f"📊 **Observability (`/metrics`)**: "
+            f"API Requests: **{int(metrics_data.get('http_requests_total', 0))}** | "
+            f"Sim Errors: **{int(metrics_data.get('simulator_errors_total', 0))}** | "
+            f"Fallbacks: **{int(metrics_data.get('fallback_activations_total', 0))}** | "
+            f"Dispatched: **{int(metrics_data.get('recommendations_submitted', 0))}** | "
+            f"Failed: **{int(metrics_data.get('recommendations_failed', 0))}**"
+        )
 
 
 def render_urgency_alerts(risk_data: dict[str, Any] | None, severity_filter: str) -> None:
@@ -860,6 +871,7 @@ def render_dashboard_fragment(backend_url: str, severity_filter: str) -> None:
     rec_resp: ApiResponse = client.get_recommendations()
     audit_resp: ApiResponse = client.get_audit_history(limit=50)
     stats_resp: ApiResponse = client.get_audit_stats()
+    metrics_resp: ApiResponse = client.get_metrics()
 
     health_data = health_resp.data if health_resp.success else None
     state_data = state_resp.data if state_resp.success else None
@@ -868,6 +880,7 @@ def render_dashboard_fragment(backend_url: str, severity_filter: str) -> None:
     rec_data = rec_resp.data if rec_resp.success else None
     audit_data = audit_resp.data if audit_resp.success else None
     stats_data = stats_resp.data if stats_resp.success else None
+    metrics_data = metrics_resp.data if metrics_resp.success else None
 
     # Top: Operational Mode Banner
     render_operational_mode_banner(health_data)
@@ -875,7 +888,7 @@ def render_dashboard_fragment(backend_url: str, severity_filter: str) -> None:
     st.markdown("---")
 
     # Status Panel KPIs
-    render_status_panel(health_data, forecast_data, risk_data)
+    render_status_panel(health_data, forecast_data, risk_data, metrics_data)
 
     st.markdown("---")
 
