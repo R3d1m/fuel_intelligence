@@ -196,10 +196,18 @@ DRILL: 10. Full Day 3 Story (End-to-End Operational Lifecycle)
 
 ## 3. Load Testing Performance
 
-*Locust load test running against backend APIs (`/state`, `/risks`, `/recommendations`):*
+*Headless Locust load test (`tools/loadtest/locustfile.py` via `tools/loadtest/run_loadtest.py`) issuing mixed read traffic (`GET /state` 40%, `GET /risks` 30%, `GET /recommendations` 20%, `GET /health` 10%, `wait_time = 0.1–0.5s`) against a single-worker Uvicorn backend (`127.0.0.1:8011`) with a 2-depot / 4-station / 4-route seeded snapshot and an in-process `httpx.MockTransport` simulator returning 144 demand-history records. Because Docker Desktop was inactive during this run, CPU and RSS memory were measured on the backend process via `psutil` rather than `docker stats`.*
 
-| Concurrency (Users) | Throughput (RPS) | Avg Latency (ms) | p50 (ms) | p95 (ms) | p99 (ms) | Error Rate (%) |
-|---|---|---|---|---|---|---|
-| 10 users | TBD | TBD | TBD | TBD | TBD | 0.0% |
-| 50 users | TBD | TBD | TBD | TBD | TBD | 0.0% |
-| 100 users | TBD | TBD | TBD | TBD | TBD | TBD |
+| Concurrency (Users) | Throughput (RPS) | Avg Latency (ms) | p50 (ms) | p95 (ms) | p99 (ms) | Error Rate (%) | Process CPU | Process RSS |
+|---|---|---|---|---|---|---|---|---|
+| 10 users | 32.5 | 8.3 | 6 | 23 | 37 | 0.0% | 14.2% | 83.0 MB |
+| 50 users | 147.9 | 16.7 | 11 | 53 | 130 | 0.0% | 53.1% | 88.1 MB |
+| 100 users | 210.7 | 149.4 | 130 | 370 | 440 | 0.0% | 84.3% | 95.9 MB |
+| 200 users | 220.2 | 540.0 | 530 | 900 | 1100 | 0.0% | 86.5% | 107.6 MB |
+
+### Bottleneck & Degradation Analysis
+
+- **Linear Scaling (10–50 users):** Throughput scales nearly linearly (`32.5` → `147.9` RPS) with sub-55 ms p95 latency and `0.0%` errors.
+- **CPU Saturation & Latency Degradation (100–200 users):** The single Uvicorn worker saturates around **210–220 RPS** (~84–86% process CPU). Beyond 50 concurrent users, `GET /risks` (which runs EWMA backtesting and 24-tick stockout projections per `(station, fuel)` on every request) and synchronous SQLite queries on `GET /recommendations` queue behind the event loop, raising p95 latency from `53 ms` (50 users) to `370 ms` (100 users) and `900 ms` (200 users).
+- **Memory Stability:** Process RSS grows modestly from `83.0 MB` to `107.6 MB` with zero request failures (`0.0%` error rate across all levels).
+- **Mitigation Path:** Caching `RiskEngine` assessments per snapshot tick (invalidated on `StateStore.update`) and running multiple Uvicorn workers behind a reverse proxy would lift the CPU ceiling without changing API semantics.

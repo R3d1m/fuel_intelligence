@@ -1,6 +1,6 @@
 # Fuel Intelligence & Resilience Platform
 
-[![CI](https://github.com/redwan/fuel_intelligence/actions/workflows/ci.yml/badge.svg)](https://github.com/redwan/fuel_intelligence/actions)
+[![CI](https://github.com/R3d1m/fuel_intelligence/actions/workflows/ci.yml/badge.svg)](https://github.com/R3d1m/fuel_intelligence/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
