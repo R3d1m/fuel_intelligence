@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, patch
 
 from dashboard.app import (
     _backend_url,
-    _render_alert_card,
     _render_events,
     _render_risk_table,
     _render_routes,
@@ -14,7 +13,6 @@ from dashboard.app import (
     render_audit,
     render_kpis,
     render_mode_banner,
-    render_network,
     render_recommendations,
 )
 from dashboard.client import ApiResponse
