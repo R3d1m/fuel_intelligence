@@ -58,12 +58,12 @@ This document records the major design decisions, trade-offs, alternatives consi
 
 ---
 
-### ADR-007: Streamlit as a Decoupled Thin-Client Operator Dashboard
+### ADR-007: Decoupled Thin-Client Operator UIs (Streamlit + React Console)
 
-- **Context:** Operators need a rich UI to monitor tanks, inspect risk alerts, and review recommendations.
-- **Decision:** Build a Streamlit application that interacts exclusively via the backend FastAPI REST endpoints.
-- **Alternatives Rejected:** Complex React/Vue frontend or embedding business logic inside Streamlit.
-- **Consequence:** Rapid iteration, clean separation of concerns, and full backend observability independent of UI.
+- **Context:** Operators need a clear UI to monitor tanks, inspect risk alerts, run Digital Twin what-if simulations, and approve recommendations.
+- **Decision:** Build decoupled thin-client UIs that interact exclusively via the backend FastAPI REST endpoints: initially a Streamlit dashboard (`dashboard/`) for rapid Day 3 iteration, followed by a dedicated React + TypeScript + Tailwind operator console (`frontend/`) on Day 6.
+- **Alternatives Rejected:** Embedding business logic, simulator calls, or state calculations inside the UI layer.
+- **Consequence:** Rapid prototyping early on, a polished multi-view operator console for final evaluation, and full backend observability independent of UI.
 
 ---
 

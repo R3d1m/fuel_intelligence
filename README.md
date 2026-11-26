@@ -38,9 +38,10 @@ BUP Simulator (HTTP, SSE)
         │
    [decisions]     Recommendation -> Human Approval -> POST -> Audit Log (SQLite)
         │
-   [api]           FastAPI: /health, /state, /risks, /recommendations, /decisions, /metrics
+   [api]           FastAPI: /health, /state, /sync, /forecasts, /risks, /plan,
+                   /twin/simulate, /recommendations, /decisions/*, /metrics
         │
-   [dashboard]     Streamlit (thin client of the API)
+   [ui]            React + TypeScript Console (frontend/) & Streamlit (dashboard/)
    [ops]           Docker, Compose, Prometheus metrics, GitHub Actions CI
 ```
 
@@ -108,11 +109,15 @@ fuel_intelligence/
     resilience/breaker.py, mode.py
     observability/metrics.py, logging.py
     api/routes.py, main.py     # FastAPI application entrypoint
-  backend/tests/               # Unit, integration, and fault-injection tests
-  dashboard/app.py             # Streamlit operator dashboard
-  tools/evaluate.py            # A/B policy evaluation harness
-  tools/loadtest/locustfile.py # Locust performance & load testing suite
-  docs/                        # Architecture, ADRs, Evidence, Runbook, Simulator Notes
+  backend/tests/                   # Unit, integration, and fault-injection tests (200 tests)
+  dashboard/app.py                 # Streamlit operator dashboard (thin client)
+  frontend/                        # React + TypeScript operator console (thin client)
+  tools/discover_simulator.py      # Simulator endpoint & schema discovery script
+  tools/evaluate.py                # A/B policy evaluation harness
+  tools/run_fault_drills.py        # Live fault-injection resilience drills
+  tools/loadtest/                  # Locust performance & load testing suite
+  docs/                            # Architecture, ADRs, Evidence, Runbook, Simulator Notes
+  daily_progress/                  # Per-day progress reports & screenshot checkpoints
   .github/workflows/ci.yml     # Automated CI pipeline
   docker-compose.yml           # Unified multi-service deployment
   README.md

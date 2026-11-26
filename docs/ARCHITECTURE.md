@@ -14,10 +14,13 @@ Fuel Simulator (HTTP, SSE)
         │
    [decisions]     Recommendation -> Human Approval -> POST -> Audit Log (SQLite)
         │
-   [api]           FastAPI: /health, /state, /risks, /recommendations, /decisions, /metrics
+   [api]           FastAPI: /health, /state, /sync, /forecasts, /risks, /plan,
+                   /twin/simulate, /recommendations, /decisions/*, /metrics
         │
-   [dashboard]     Streamlit (thin client of the API)
-   [ops]           Docker, Compose, Prometheus metrics, GitHub Actions CI
+   [ui]            React + TypeScript Console (frontend/) & Streamlit (dashboard/)
+                   — both strictly thin clients of the FastAPI backend
+   [tools & ops]   Docker Compose, Prometheus, GitHub Actions CI,
+                   Fault Drills, Policy Evaluator, Locust Load Test
 ```
 
 ## Core Design Principles
