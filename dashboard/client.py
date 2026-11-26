@@ -158,6 +158,7 @@ class BackendApiClient:
         self,
         status: str | None = None,
         station_id: str | None = None,
+        limit: int | None = None,
     ) -> ApiResponse:
         """Fetch actionable recommendations from backend."""
         params: dict[str, Any] = {}
@@ -165,6 +166,8 @@ class BackendApiClient:
             params["status"] = status
         if station_id:
             params["station_id"] = station_id
+        if limit is not None:
+            params["limit"] = limit
         return self._get("/recommendations", params=params or None)
 
     def generate_recommendations(self) -> ApiResponse:
