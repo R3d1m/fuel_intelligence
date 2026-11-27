@@ -6,6 +6,17 @@
 
 > An intelligent, fault-tolerant decision-support platform built on top of the **BUP Fuel Supply Simulator** for the BUP CSE FEST 2026 Hackathon Finals.
 
+## Live Deployment (AWS)
+
+| Service | Purpose | Link |
+|---|---|---|
+| **React Operator Console** | Primary multi-view operator UI | [http://16.4.54.112:3000/](http://16.4.54.112:3000/) |
+| **Backend API (Swagger Docs)** | Interactive FastAPI documentation | [http://16.4.54.112:8001/docs](http://16.4.54.112:8001/docs) |
+| **Backend Health & Metrics** | Operational mode & Prometheus telemetry | [Health](http://16.4.54.112:8001/health) · [Metrics](http://16.4.54.112:8001/metrics) |
+| **Streamlit Dashboard** | Thin-client analytics dashboard | [http://16.4.54.112:8501/](http://16.4.54.112:8501/) |
+| **Fuel Simulator Admin** | Upstream simulator control panel | [http://16.4.54.112:8000/admin](http://16.4.54.112:8000/admin) |
+| **Daily Progress Reports** | Day-by-day build logs & screenshots | [daily_progress/](https://github.com/R3d1m/fuel_intelligence/tree/main/daily_progress) |
+
 ---
 
 ## 1. Executive Summary
